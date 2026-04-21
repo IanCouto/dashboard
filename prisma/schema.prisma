@@ -1,0 +1,38 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Get a free hosted Postgres database in seconds: `npx create-db`
+
+generator client {
+  provider = "prisma-client"
+  output   = "../lib/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model Record {
+  id               Int      @id @default(autoincrement())
+  regiao           String
+  promotor         String
+  tipo_contrato    String
+  coordenador      String
+  codigo_cliente   String
+  descricao_cliente String
+  tipo_faturamento String
+  ano              Int
+  mes              Int
+  valor            Decimal  @db.Decimal(14, 2)
+
+  @@index([ano])
+  @@index([regiao])
+  @@index([promotor])
+  @@index([tipo_contrato])
+  @@index([coordenador])
+  @@index([codigo_cliente])
+  @@index([descricao_cliente])
+  @@index([tipo_faturamento])
+  @@index([mes])
+  @@map("records")
+}
