@@ -1,10 +1,12 @@
 "use client";
 
-import { useCallback, useMemo, useRef, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { BarChart } from "@tremor/react";
+import { useCallback, useMemo, useState } from "react";
+import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  Bar as RechartsBar,
+  BarChart as RechartsBarChart,
   CartesianGrid,
+  Cell,
   Legend,
   Line,
   LineChart as RechartsLineChart,
@@ -15,12 +17,24 @@ import {
 } from "recharts";
 import { utils, writeFileXLSX } from "xlsx";
 import { Download } from "lucide-react";
+import { createSavedChartAction } from "@/app/actions/create-saved-chart";
+import { deleteSavedChartAction } from "@/app/actions/delete-saved-chart";
+import { getChartFieldsAction } from "@/app/actions/get-chart-fields";
 import { getDashboardAggregationsAction } from "@/app/actions/get-dashboard-aggregations";
+import { getSavedChartDataAction } from "@/app/actions/get-saved-chart-data";
+import { listSavedChartsAction } from "@/app/actions/list-saved-charts";
+import { updateSavedChartAction } from "@/app/actions/update-saved-chart";
 import { DashboardFilters, initialFilters } from "@/components/dashboard-filters";
+import {
+  SavedChartForm,
+  type SavedChartFormValues,
+} from "@/components/saved-chart-form";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import type { SavedChartType } from "@/services/chart-fields";
 import type { DashboardFilters as DashboardFiltersType } from "@/services/filter-options";
+import type { SavedChartDto } from "@/services/saved-charts";
 
 const currency = new Intl.NumberFormat("pt-BR", {
   style: "currency",
@@ -47,17 +61,42 @@ function toCurrency(value: number) {
   return currency.format(value);
 }
 
+function formValuesToPayload(values: SavedChartFormValues) {
+  return {
+    name: values.name,
+    chartType: values.chartType as SavedChartType,
+    xField: values.xField,
+    yField: values.yField,
+    pivotConfig: {
+      rowFields: values.rowFields,
+      columnField: values.xField,
+      valueOperation: values.valueOperation,
+      filterField: null,
+      filterValue: null,
+    },
+    comparisonField: null,
+    comparisonOperator: null,
+    comparisonValue: null,
+  };
+}
+
 type SubtableSortColumn =
+  | "regiao"
   | "promotor"
+  | "tipo_contrato"
   | "coordenador"
+  | "codigo_cliente"
   | "descricao_cliente"
   | "tipo_faturamento"
   | "ano"
   | "total";
 
 type SubtableRow = {
+  regiao: string;
   promotor: string;
+  tipo_contrato: string;
   coordenador: string;
+  codigo_cliente: string;
   descricao_cliente: string;
   tipo_faturamento: string;
   total: number;
@@ -77,11 +116,20 @@ function sortSubtableRows(
   copy.sort((a, b) => {
     let cmp = 0;
     switch (sort.column) {
+      case "regiao":
+        cmp = a.regiao.localeCompare(b.regiao, "pt-BR");
+        break;
       case "promotor":
         cmp = a.promotor.localeCompare(b.promotor, "pt-BR");
         break;
+      case "tipo_contrato":
+        cmp = a.tipo_contrato.localeCompare(b.tipo_contrato, "pt-BR");
+        break;
       case "coordenador":
         cmp = a.coordenador.localeCompare(b.coordenador, "pt-BR");
+        break;
+      case "codigo_cliente":
+        cmp = a.codigo_cliente.localeCompare(b.codigo_cliente, "pt-BR");
         break;
       case "descricao_cliente":
         cmp = a.descricao_cliente.localeCompare(b.descricao_cliente, "pt-BR");
@@ -106,35 +154,108 @@ function sortSubtableRows(
   return copy;
 }
 
-function subtableRowKey(row: SubtableRow): string {
-  return [row.promotor, row.coordenador, row.descricao_cliente, row.tipo_faturamento].join("|");
-}
-
-function subtableRowLabel(key: string): string {
-  const parts = key.split("|");
-  const promotor = parts[0] ?? "";
-  const tipo = parts[3] ?? "";
-  const truncate = (value: string, max: number) =>
-    value.length > max ? `${value.slice(0, max)}…` : value;
-  return `${truncate(tipo, 36)} · ${truncate(promotor, 18)}`;
-}
-
 export function DashboardOverview() {
+  const queryClient = useQueryClient();
   const [filters, setFilters] = useState<DashboardFiltersType>(initialFilters);
   const queryKey = useMemo(() => ["dashboard-aggregations", filters], [filters]);
 
-  const { data, isLoading, isFetching } = useQuery({
+  const { data, isLoading } = useQuery({
     queryKey,
     queryFn: () => getDashboardAggregationsAction(filters),
     placeholderData: (previousData) => previousData,
   });
+  const savedChartsQuery = useQuery({
+    queryKey: ["saved-charts"],
+    queryFn: listSavedChartsAction,
+  });
+  const chartFieldsQuery = useQuery({
+    queryKey: ["chart-fields"],
+    queryFn: getChartFieldsAction,
+  });
+  const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
+  const [editingChart, setEditingChart] = useState<SavedChartDto | null>(null);
+  const [selectedChartIds, setSelectedChartIds] = useState<string[]>([]);
+  const [chartSearch, setChartSearch] = useState("");
 
-  const barChartRef = useRef<HTMLDivElement | null>(null);
-  const lineChartRef = useRef<HTMLDivElement | null>(null);
-  const tipoBarChartRef = useRef<HTMLDivElement | null>(null);
-  const [visibleCharts, setVisibleCharts] = useState<Array<"year" | "tipoBar" | "line">>(
-    ["year", "tipoBar", "line"]
+  const chartsById = useMemo(
+    () => new Map((savedChartsQuery.data ?? []).map((chart) => [chart.id, chart])),
+    [savedChartsQuery.data]
   );
+
+  const selectedCharts = useMemo(
+    () =>
+      selectedChartIds
+        .map((id) => chartsById.get(id))
+        .filter((chart): chart is SavedChartDto => Boolean(chart)),
+    [chartsById, selectedChartIds]
+  );
+
+  const filteredCharts = useMemo(() => {
+    const query = chartSearch.trim().toLowerCase();
+    const all = savedChartsQuery.data ?? [];
+    const matched = query
+      ? all.filter((chart) => {
+          const searchable = [
+            chart.name,
+            chart.chartType,
+            chart.xField,
+            chart.yField,
+            ...(chart.pivotConfig?.rowFields ?? []),
+          ]
+            .join(" ")
+            .toLowerCase();
+          return searchable.includes(query);
+        })
+      : all;
+
+    return [...matched].sort((a, b) => {
+      const aSelected = selectedChartIds.includes(a.id);
+      const bSelected = selectedChartIds.includes(b.id);
+      if (aSelected && !bSelected) return -1;
+      if (!aSelected && bSelected) return 1;
+      return a.name.localeCompare(b.name, "pt-BR");
+    });
+  }, [chartSearch, savedChartsQuery.data, selectedChartIds]);
+
+  const selectedChartDataQueries = useQueries({
+    queries: selectedCharts.map((chart) => ({
+      queryKey: ["saved-chart-data", chart.id, chart.updatedAt, filters],
+      queryFn: () => getSavedChartDataAction(chart, filters),
+    })),
+  });
+
+  const createChartMutation = useMutation({
+    mutationFn: createSavedChartAction,
+    onSuccess: async (createdChart) => {
+      await queryClient.invalidateQueries({ queryKey: ["saved-charts"] });
+      setSelectedChartIds((current) =>
+        current.includes(createdChart.id) ? current : [createdChart.id, ...current]
+      );
+      setEditingChart(null);
+      setIsCreateModalOpen(false);
+    },
+  });
+
+  const updateChartMutation = useMutation({
+    mutationFn: ({ id, values }: { id: string; values: SavedChartFormValues }) =>
+      updateSavedChartAction(id, formValuesToPayload(values)),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["saved-charts"] });
+      setEditingChart(null);
+    },
+  });
+
+  const deleteChartMutation = useMutation({
+    mutationFn: deleteSavedChartAction,
+    onSuccess: async (result) => {
+      await queryClient.invalidateQueries({ queryKey: ["saved-charts"] });
+      setSelectedChartIds((current) => current.filter((id) => id !== result.id));
+      if (editingChart?.id === result.id) {
+        setEditingChart(null);
+      }
+    },
+  });
+
   const [hoveredRowDetails, setHoveredRowDetails] = useState<{
     ano: number;
     promotor: string;
@@ -155,131 +276,79 @@ export function DashboardOverview() {
     filters.anos.length ? filters.anos.includes(table.ano) : true
   );
 
-  const chartYearCategories = useMemo(
-    () =>
-      [...selectedYearTables]
-        .sort((a, b) => a.ano - b.ano)
-        .map((table) => `Ano ${table.ano}`),
-    [selectedYearTables]
+  const savedChartBarPalette = useMemo(
+    () => [
+      "#3b82f6",
+      "#06b6d4",
+      "#6366f1",
+      "#a855f7",
+      "#f59e0b",
+      "#10b981",
+      "#f43f5e",
+      "#14b8a6",
+    ],
+    []
+  );
+  const tipoFaturamentoColorMap = useMemo(() => {
+    const knownTipos = new Set<string>();
+    for (const table of selectedYearTables) {
+      for (const row of table.rows as SubtableRow[]) {
+        knownTipos.add(row.tipo_faturamento);
+      }
+    }
+    const map = new Map<string, string>();
+    Array.from(knownTipos)
+      .sort((a, b) => a.localeCompare(b, "pt-BR"))
+      .forEach((tipo, index) => {
+        map.set(tipo, savedChartBarPalette[index % savedChartBarPalette.length]);
+      });
+    return map;
+  }, [savedChartBarPalette, selectedYearTables]);
+
+  const resolveTipoFaturamentoColor = useCallback(
+    (label: string, fallbackIndex: number) => {
+      for (const [tipo, color] of tipoFaturamentoColorMap.entries()) {
+        if (label.includes(tipo)) {
+          return color;
+        }
+      }
+      return savedChartBarPalette[fallbackIndex % savedChartBarPalette.length];
+    },
+    [savedChartBarPalette, tipoFaturamentoColorMap]
   );
 
-  const rowTotalsByLineChartData = useMemo(() => {
-    const keys = new Set<string>();
-    for (const table of selectedYearTables) {
-      for (const row of table.rows as SubtableRow[]) {
-        keys.add(subtableRowKey(row));
+  const getLineSeries = useCallback((chart: SavedChartDto, data: Array<{ label: string; value: number }>) => {
+    if (chart.chartType !== "line") {
+      return [] as string[];
+    }
+    const rows = new Set<string>();
+    for (const point of data) {
+      const [rowLabel] = point.label.split(" | ");
+      if (rowLabel) {
+        rows.add(rowLabel);
       }
     }
-    return [...keys].map((key) => {
-      const point: Record<string, string | number> = { linha: subtableRowLabel(key) };
-      for (const table of selectedYearTables) {
-        const match = (table.rows as SubtableRow[]).find((row) => subtableRowKey(row) === key);
-        point[`Ano ${table.ano}`] = match?.total ?? 0;
-      }
-      return point;
-    });
-  }, [selectedYearTables]);
-
-  const tipoTotalsByYearFromSubtables = useMemo(() => {
-    const tipos = new Set<string>();
-    for (const table of selectedYearTables) {
-      for (const row of table.rows as SubtableRow[]) {
-        tipos.add(row.tipo_faturamento);
-      }
-    }
-    return [...tipos]
-      .sort((a, b) => a.localeCompare(b, "pt-BR"))
-      .map((tipo) => {
-        const point: Record<string, string | number> = { tipo };
-        for (const table of selectedYearTables) {
-          const sum = (table.rows as SubtableRow[])
-            .filter((row) => row.tipo_faturamento === tipo)
-            .reduce((acc, row) => acc + row.total, 0);
-          point[`Ano ${table.ano}`] = sum;
-        }
-        return point;
-      });
-  }, [selectedYearTables]);
-
-  const monthlyTotalsByTableChartData = useMemo(() => {
-    const rows: Array<Record<string, string | number>> = [];
-    for (let mes = 1; mes <= 12; mes += 1) {
-      const point: Record<string, string | number> = {
-        mes: monthLabelByNumber[mes] ?? String(mes),
-      };
-      for (const table of selectedYearTables) {
-        let sum = 0;
-        for (const row of table.rows as SubtableRow[]) {
-          const monthRow = row.monthlyBreakdown.find((item) => item.mes === mes);
-          sum += monthRow?.total ?? 0;
-        }
-        point[`Ano ${table.ano}`] = sum;
-      }
-      rows.push(point);
-    }
-    return rows;
-  }, [selectedYearTables]);
-
-  const chartYearColors = useMemo(() => {
-    const palette = ["blue", "cyan", "indigo", "violet", "amber", "emerald", "rose", "fuchsia"];
-    return chartYearCategories.map((_, index) => palette[index % palette.length]);
-  }, [chartYearCategories]);
-
-  const exportChartAsPng1080p = useCallback(async (ref: React.RefObject<HTMLDivElement | null>, fileName: string) => {
-    if (!ref.current) {
-      return;
-    }
-
-    const svg =
-      ref.current.querySelector(".recharts-wrapper svg") ??
-      ref.current.querySelector(".recharts-responsive-container svg") ??
-      ref.current.querySelector("svg.recharts-surface");
-    if (!svg) {
-      throw new Error("Nao foi possivel localizar o SVG do grafico para exportacao.");
-    }
-
-    const sourceRect = svg.getBoundingClientRect();
-    const serializer = new XMLSerializer();
-    const svgMarkup = serializer.serializeToString(svg);
-    const svgBlob = new Blob([svgMarkup], { type: "image/svg+xml;charset=utf-8" });
-    const svgUrl = URL.createObjectURL(svgBlob);
-
-    const image = new Image();
-    image.src = svgUrl;
-
-    await new Promise<void>((resolve, reject) => {
-      image.onload = () => resolve();
-      image.onerror = () => reject(new Error("Falha ao gerar imagem a partir do componente SVG."));
-    });
-
-    const targetWidth = 1920;
-    const targetHeight = 1080;
-    const canvas = document.createElement("canvas");
-    canvas.width = targetWidth;
-    canvas.height = targetHeight;
-    const context = canvas.getContext("2d");
-
-    if (!context) {
-      throw new Error("Nao foi possivel criar contexto de exportacao.");
-    }
-
-    context.fillStyle = "#18181b";
-    context.fillRect(0, 0, targetWidth, targetHeight);
-
-    const scale = Math.min(targetWidth / sourceRect.width, targetHeight / sourceRect.height);
-    const drawWidth = sourceRect.width * scale;
-    const drawHeight = sourceRect.height * scale;
-    const x = (targetWidth - drawWidth) / 2;
-    const y = (targetHeight - drawHeight) / 2;
-    context.drawImage(image, x, y, drawWidth, drawHeight);
-
-    URL.revokeObjectURL(svgUrl);
-
-    const link = document.createElement("a");
-    link.href = canvas.toDataURL("image/png");
-    link.download = fileName;
-    link.click();
+    return Array.from(rows.values());
   }, []);
+
+  const getLineData = useCallback((chart: SavedChartDto, data: Array<{ label: string; value: number }>) => {
+    if (chart.chartType !== "line") {
+      return [] as Array<Record<string, string | number>>;
+    }
+    const byColumn = new Map<string, Record<string, string | number>>();
+    for (const point of data) {
+      const [rowLabel, columnLabel] = point.label.split(" | ");
+      const column = columnLabel ?? "Sem coluna";
+      const row = rowLabel ?? "Serie";
+      const current = byColumn.get(column) ?? { coluna: column };
+      current[row] = point.value;
+      byColumn.set(column, current);
+    }
+    return Array.from(byColumn.values()).sort((a, b) =>
+      String(a.coluna).localeCompare(String(b.coluna), "pt-BR")
+    );
+  }, []);
+
 
   const exportYearTableToExcel = useCallback(
     (year: number) => {
@@ -296,8 +365,11 @@ export function DashboardOverview() {
 
       const tableSheet = utils.json_to_sheet(
         sortedRows.map((row) => ({
+          regiao: row.regiao,
           promotor: row.promotor,
+          tipo_contrato: row.tipo_contrato,
           coordenador: row.coordenador,
+          codigo_cliente: row.codigo_cliente,
           descricao_cliente: row.descricao_cliente,
           tipo_faturamento: row.tipo_faturamento,
           ano: year,
@@ -325,46 +397,338 @@ export function DashboardOverview() {
     });
   }, []);
 
-  const toggleChart = useCallback((chart: "year" | "tipoBar" | "line") => {
-    setVisibleCharts((current) => {
-      const exists = current.includes(chart);
-      if (exists) {
-        return current.filter((item) => item !== chart);
+  const handleSaveChart = useCallback(
+    (values: SavedChartFormValues) => {
+      if (editingChart) {
+        updateChartMutation.mutate({ id: editingChart.id, values });
+        return;
       }
-      return [...current, chart];
-    });
-  }, []);
+      createChartMutation.mutate(formValuesToPayload(values));
+    },
+    [createChartMutation, editingChart, updateChartMutation]
+  );
 
   return (
     <>
       <DashboardFilters filters={filters} onChange={setFilters} />
 
-      <section className="flex flex-wrap items-center gap-3">
-        <div className="flex flex-wrap gap-2">
-          {[
-            { key: "year" as const, label: "Por linha (por ano)" },
-            { key: "tipoBar" as const, label: "Por tipo (por ano)" },
-            { key: "line" as const, label: "Mensal (por ano)" },
-          ].map((chart) => {
-            const selected = visibleCharts.includes(chart.key);
-            return (
+      <section>
+        <Card className="rounded-2xl border-zinc-800 bg-zinc-900 text-white shadow-sm">
+          <CardHeader className="pb-2">
+            <div className="flex items-center justify-between gap-3">
+              <CardTitle className="text-sm font-medium text-zinc-300">Graficos salvos</CardTitle>
               <Button
-                key={chart.key}
                 type="button"
-                variant="outline"
-                onClick={() => toggleChart(chart.key)}
-                className={`rounded-xl border-zinc-700 transition ${
-                  selected ? "bg-zinc-800 text-white" : "bg-zinc-900 text-zinc-400"
-                }`}
+                className="rounded-xl bg-blue-600 text-white hover:bg-blue-500"
+                onClick={() => setIsCreateModalOpen(true)}
               >
-                {chart.label}
+                Novo grafico
               </Button>
-            );
-          })}
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-2">
+            <input
+              value={chartSearch}
+              onChange={(event) => setChartSearch(event.target.value)}
+              placeholder="Buscar grafico salvo..."
+              className="w-full rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm text-zinc-100 placeholder:text-zinc-500"
+            />
+            {savedChartsQuery.isLoading ? (
+              <Skeleton className="h-28 w-full bg-zinc-800" />
+            ) : (savedChartsQuery.data?.length ?? 0) === 0 ? (
+              <p className="text-sm text-zinc-500">
+                Nenhum grafico salvo. Crie um grafico para visualizar aqui.
+              </p>
+            ) : filteredCharts.length === 0 ? (
+              <p className="text-sm text-zinc-500">Nenhum grafico encontrado para a busca.</p>
+            ) : (
+              filteredCharts.map((chart) => {
+                const isSelected = selectedChartIds.includes(chart.id);
+                return (
+                  <div
+                    key={chart.id}
+                    className={`rounded-xl border p-3 ${
+                      isSelected
+                        ? "border-blue-500 bg-blue-500/10"
+                        : "border-zinc-800 bg-zinc-950/60"
+                    }`}
+                  >
+                    <div className="flex items-start gap-2">
+                      <input
+                        type="checkbox"
+                        checked={isSelected}
+                        onChange={() =>
+                          setSelectedChartIds((current) =>
+                            isSelected
+                              ? current.filter((id) => id !== chart.id)
+                              : [chart.id, ...current]
+                          )
+                        }
+                        className="mt-1"
+                      />
+                      <div className="min-w-0 flex-1">
+                      <p className="text-sm font-medium text-zinc-100">{chart.name}</p>
+                      <p className="text-xs text-zinc-500">
+                        {chart.chartType.toUpperCase()} · X: {chart.xField} · Y: {chart.yField}
+                      </p>
+                      </div>
+                    </div>
+                    <div className="mt-2 flex gap-2">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        className="h-7 rounded-lg border-zinc-700 px-2 text-xs text-zinc-200"
+                        onClick={() => setEditingChart(chart)}
+                      >
+                        Editar
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        className="h-7 rounded-lg border-zinc-700 px-2 text-xs text-red-300 hover:bg-red-500/10"
+                        onClick={() => {
+                          const confirmed = window.confirm(
+                            `Deseja excluir o grafico "${chart.name}"?`
+                          );
+                          if (confirmed) {
+                            deleteChartMutation.mutate(chart.id);
+                          }
+                        }}
+                      >
+                        Excluir
+                      </Button>
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </CardContent>
+        </Card>
+      </section>
+
+      {isCreateModalOpen ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+          <div className="w-full max-w-3xl rounded-2xl border border-zinc-800 bg-zinc-900 p-4">
+            {chartFieldsQuery.isLoading ? (
+              <Skeleton className="h-64 w-full bg-zinc-800" />
+            ) : (
+              <SavedChartForm
+                key="create-modal"
+                fields={chartFieldsQuery.data?.fields ?? []}
+                chartTypes={chartFieldsQuery.data?.chartTypes ?? ["bar", "column", "line"]}
+                isSubmitting={createChartMutation.isPending}
+                onSubmit={handleSaveChart}
+                onCancelEdit={() => setIsCreateModalOpen(false)}
+              />
+            )}
+          </div>
         </div>
-        {isFetching && !isLoading ? (
-          <span className="text-xs text-zinc-500">Sincronizando visualizacao...</span>
+      ) : null}
+
+      {editingChart ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+          <div className="w-full max-w-3xl rounded-2xl border border-zinc-800 bg-zinc-900 p-4">
+            {chartFieldsQuery.isLoading ? (
+              <Skeleton className="h-64 w-full bg-zinc-800" />
+            ) : (
+              <SavedChartForm
+                key={editingChart.id}
+                fields={chartFieldsQuery.data?.fields ?? []}
+                chartTypes={chartFieldsQuery.data?.chartTypes ?? ["bar", "column", "line"]}
+                initialValue={editingChart}
+                isSubmitting={updateChartMutation.isPending}
+                onSubmit={handleSaveChart}
+                onCancelEdit={() => setEditingChart(null)}
+              />
+            )}
+          </div>
+        </div>
+      ) : null}
+
+      <section className="space-y-4">
+        {selectedCharts.length === 0 ? (
+          <Card className="rounded-2xl border-zinc-800 bg-zinc-900 text-white shadow-sm">
+            <CardHeader className="pb-1">
+              <CardTitle className="text-sm font-medium text-zinc-400">Visualizacao de graficos</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <p className="py-8 text-center text-sm text-zinc-500">
+                Selecione um ou mais graficos salvos para visualizar.
+              </p>
+            </CardContent>
+          </Card>
         ) : null}
+
+        {selectedCharts.map((chart, chartIndex) => {
+          const chartQuery = selectedChartDataQueries[chartIndex];
+          const chartData = chartQuery?.data ?? [];
+          const lineSeries = getLineSeries(chart, chartData);
+          const lineData = getLineData(chart, chartData);
+
+          return (
+      <Card key={chart.id} className="rounded-2xl border-zinc-800 bg-zinc-900 text-white shadow-sm">
+        <CardHeader className="pb-1">
+          <CardTitle className="text-sm font-medium text-zinc-400">
+            {`Visualizacao: ${chart.name}`}
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          {chartQuery?.isLoading ? (
+            <Skeleton className="h-72 w-full bg-zinc-800" />
+          ) : chartData.length === 0 ? (
+            <p className="py-8 text-center text-sm text-zinc-500">
+              Sem dados para o grafico selecionado.
+            </p>
+          ) : chart.chartType === "bar" ? (
+            <div className="h-96 w-full">
+              <ResponsiveContainer width="100%" height="100%">
+                <RechartsBarChart
+                  data={chartData.map((item) => ({
+                    label: item.label,
+                    valor: item.value,
+                  }))}
+                  layout="vertical"
+                  margin={{ top: 12, right: 20, left: 20, bottom: 12 }}
+                >
+                  <CartesianGrid stroke="#3f3f46" strokeDasharray="3 3" />
+                  <XAxis
+                    type="number"
+                    tickFormatter={(value) => toCurrency(Number(value))}
+                    tick={{ fill: "#a1a1aa", fontSize: 12 }}
+                    axisLine={{ stroke: "#3f3f46" }}
+                    tickLine={{ stroke: "#3f3f46" }}
+                  />
+                  <YAxis
+                    type="category"
+                    dataKey="label"
+                    width={240}
+                    tick={{ fill: "#a1a1aa", fontSize: 12 }}
+                    axisLine={{ stroke: "#3f3f46" }}
+                    tickLine={{ stroke: "#3f3f46" }}
+                  />
+                  <Tooltip
+                    formatter={(value: number) => toCurrency(Number(value))}
+                    cursor={false}
+                    contentStyle={{
+                      backgroundColor: "#18181b",
+                      border: "1px solid #3f3f46",
+                      borderRadius: "8px",
+                    }}
+                    labelStyle={{ color: "#e4e4e7" }}
+                    itemStyle={{ color: "#e4e4e7" }}
+                  />
+                  <RechartsBar dataKey="valor" radius={[0, 6, 6, 0]} activeBar={false}>
+                    {chartData.map((entry, index) => (
+                      <Cell
+                        key={`${entry.label}-${index}`}
+                        fill={resolveTipoFaturamentoColor(entry.label, index)}
+                      />
+                    ))}
+                  </RechartsBar>
+                </RechartsBarChart>
+              </ResponsiveContainer>
+            </div>
+          ) : chart.chartType === "column" ? (
+            <div className="h-96 w-full">
+              <ResponsiveContainer width="100%" height="100%">
+                <RechartsBarChart
+                  data={chartData.map((item) => ({
+                    label: item.label,
+                    valor: item.value,
+                  }))}
+                  margin={{ top: 12, right: 20, left: 8, bottom: 12 }}
+                >
+                  <CartesianGrid stroke="#3f3f46" strokeDasharray="3 3" />
+                  <XAxis
+                    dataKey="label"
+                    tick={{ fill: "#a1a1aa", fontSize: 12 }}
+                    axisLine={{ stroke: "#3f3f46" }}
+                    tickLine={{ stroke: "#3f3f46" }}
+                  />
+                  <YAxis
+                    tickFormatter={(value) => toCurrency(Number(value))}
+                    tick={{ fill: "#a1a1aa", fontSize: 12 }}
+                    width={170}
+                    axisLine={{ stroke: "#3f3f46" }}
+                    tickLine={{ stroke: "#3f3f46" }}
+                  />
+                  <Tooltip
+                    formatter={(value: number) => toCurrency(Number(value))}
+                    cursor={false}
+                    contentStyle={{
+                      backgroundColor: "#18181b",
+                      border: "1px solid #3f3f46",
+                      borderRadius: "8px",
+                    }}
+                    labelStyle={{ color: "#e4e4e7" }}
+                    itemStyle={{ color: "#e4e4e7" }}
+                  />
+                  <RechartsBar dataKey="valor" radius={[6, 6, 0, 0]} activeBar={false}>
+                    {chartData.map((entry, index) => (
+                      <Cell
+                        key={`${entry.label}-${index}`}
+                        fill={resolveTipoFaturamentoColor(entry.label, index)}
+                      />
+                    ))}
+                  </RechartsBar>
+                </RechartsBarChart>
+              </ResponsiveContainer>
+            </div>
+          ) : (
+            <div className="h-72 w-full">
+              <ResponsiveContainer width="100%" height="100%">
+                <RechartsLineChart data={lineData}>
+                  <CartesianGrid stroke="#3f3f46" strokeDasharray="3 3" />
+                  <XAxis
+                    dataKey="coluna"
+                    tick={{ fill: "#a1a1aa", fontSize: 12 }}
+                    axisLine={{ stroke: "#3f3f46" }}
+                    tickLine={{ stroke: "#3f3f46" }}
+                  />
+                  <YAxis
+                    tickFormatter={(value) => toCurrency(Number(value))}
+                    tick={{ fill: "#a1a1aa", fontSize: 12 }}
+                    width={170}
+                    axisLine={{ stroke: "#3f3f46" }}
+                    tickLine={{ stroke: "#3f3f46" }}
+                  />
+                  <Tooltip
+                    formatter={(value: number) => toCurrency(Number(value))}
+                    contentStyle={{
+                      backgroundColor: "#18181b",
+                      border: "1px solid #3f3f46",
+                      borderRadius: "8px",
+                    }}
+                    labelStyle={{ color: "#e4e4e7" }}
+                  />
+                  {lineSeries.length > 1 ? (
+                    <Legend wrapperStyle={{ color: "#d4d4d8", fontSize: 12 }} />
+                  ) : null}
+                  {lineSeries.map((series, index) => {
+                    const strokeColor = resolveTipoFaturamentoColor(series, index);
+                    return (
+                      <Line
+                        key={series}
+                        type="monotone"
+                        dataKey={series}
+                        stroke={strokeColor}
+                        strokeWidth={3}
+                        fill="none"
+                        dot={{ r: 2, stroke: strokeColor, fill: strokeColor }}
+                        activeDot={{ r: 5, stroke: strokeColor, fill: "#18181b", strokeWidth: 2 }}
+                        isAnimationActive={false}
+                        connectNulls
+                      />
+                    );
+                  })}
+                </RechartsLineChart>
+              </ResponsiveContainer>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+          );
+        })}
       </section>
 
       <section className="space-y-4">
@@ -411,6 +775,15 @@ export function DashboardOverview() {
                         <button
                           type="button"
                           className="w-full rounded px-2 py-1 text-left text-xs font-medium text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200"
+                          onClick={() => toggleSubtableSort(table.ano, "regiao")}
+                        >
+                          Regiao{sortIndicator("regiao")}
+                        </button>
+                      </th>
+                      <th className="px-1 py-2">
+                        <button
+                          type="button"
+                          className="w-full rounded px-2 py-1 text-left text-xs font-medium text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200"
                           onClick={() => toggleSubtableSort(table.ano, "promotor")}
                         >
                           Promotor{sortIndicator("promotor")}
@@ -420,9 +793,27 @@ export function DashboardOverview() {
                         <button
                           type="button"
                           className="w-full rounded px-2 py-1 text-left text-xs font-medium text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200"
+                          onClick={() => toggleSubtableSort(table.ano, "tipo_contrato")}
+                        >
+                          Tipo contrato{sortIndicator("tipo_contrato")}
+                        </button>
+                      </th>
+                      <th className="px-1 py-2">
+                        <button
+                          type="button"
+                          className="w-full rounded px-2 py-1 text-left text-xs font-medium text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200"
                           onClick={() => toggleSubtableSort(table.ano, "coordenador")}
                         >
                           Coordenador{sortIndicator("coordenador")}
+                        </button>
+                      </th>
+                      <th className="px-1 py-2">
+                        <button
+                          type="button"
+                          className="w-full rounded px-2 py-1 text-left text-xs font-medium text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200"
+                          onClick={() => toggleSubtableSort(table.ano, "codigo_cliente")}
+                        >
+                          Codigo cliente{sortIndicator("codigo_cliente")}
                         </button>
                       </th>
                       <th className="px-1 py-2">
@@ -503,8 +894,11 @@ export function DashboardOverview() {
                           index % 2 === 0 ? "bg-zinc-900" : "bg-zinc-950/40"
                         } cursor-pointer hover:bg-zinc-800/60`}
                       >
+                        <td className="px-3 py-2">{row.regiao}</td>
                         <td className="px-3 py-2">{row.promotor}</td>
+                        <td className="px-3 py-2">{row.tipo_contrato}</td>
                         <td className="px-3 py-2">{row.coordenador}</td>
+                        <td className="px-3 py-2">{row.codigo_cliente}</td>
                         <td className="px-3 py-2">{row.descricao_cliente}</td>
                         <td className="px-3 py-2">{row.tipo_faturamento}</td>
                         <td className="px-3 py-2">{table.ano}</td>
@@ -548,187 +942,6 @@ export function DashboardOverview() {
             Nenhuma tabela encontrada para os anos selecionados.
           </div>
         ) : null}
-      </section>
-
-      <section className="space-y-4">
-        {visibleCharts.includes("year") ? (
-          <Card
-            ref={barChartRef}
-            className="rounded-2xl border-zinc-800 bg-zinc-900 text-white shadow-sm"
-          >
-            <CardHeader className="pb-1">
-              <div className="flex items-center justify-between">
-                <CardTitle className="text-sm font-medium text-zinc-400">
-                  Total por linha da subtabela (por ano)
-                </CardTitle>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  className="h-8 w-8 rounded-lg p-0 text-zinc-300 hover:bg-zinc-800"
-                  onClick={() => exportChartAsPng1080p(barChartRef, "chart-total-por-linha-por-ano-1080p.png")}
-                >
-                  <Download className="size-4" />
-                </Button>
-              </div>
-            </CardHeader>
-            <CardContent>
-              {isLoading ? (
-                <Skeleton className="h-64 w-full bg-zinc-800" />
-              ) : chartYearCategories.length === 0 ? (
-                <p className="py-8 text-center text-sm text-zinc-500">
-                  Sem dados de subtabela para os anos selecionados.
-                </p>
-              ) : (
-                <BarChart
-                  className="h-96"
-                  layout="vertical"
-                  data={rowTotalsByLineChartData}
-                  index="linha"
-                  categories={chartYearCategories}
-                  colors={chartYearColors}
-                  valueFormatter={(value) => toCurrency(Number(value))}
-                  yAxisWidth={220}
-                />
-              )}
-            </CardContent>
-          </Card>
-        ) : null}
-
-        {visibleCharts.includes("tipoBar") ? (
-          <Card
-            ref={tipoBarChartRef}
-            className="rounded-2xl border-zinc-800 bg-zinc-900 text-white shadow-sm"
-          >
-            <CardHeader className="pb-1">
-              <div className="flex items-center justify-between">
-                <CardTitle className="text-sm font-medium text-zinc-400">
-                  Total por tipo de faturamento nas subtabelas (por ano)
-                </CardTitle>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  className="h-8 w-8 rounded-lg p-0 text-zinc-300 hover:bg-zinc-800"
-                  onClick={() => exportChartAsPng1080p(tipoBarChartRef, "chart-total-por-tipo-por-ano-1080p.png")}
-                >
-                  <Download className="size-4" />
-                </Button>
-              </div>
-            </CardHeader>
-            <CardContent>
-              {isLoading ? (
-                <Skeleton className="h-64 w-full bg-zinc-800" />
-              ) : chartYearCategories.length === 0 ? (
-                <p className="py-8 text-center text-sm text-zinc-500">
-                  Sem dados de subtabela para os anos selecionados.
-                </p>
-              ) : (
-                <BarChart
-                  className="h-96"
-                  data={tipoTotalsByYearFromSubtables}
-                  index="tipo"
-                  categories={chartYearCategories}
-                  colors={chartYearColors}
-                  valueFormatter={(value) => toCurrency(Number(value))}
-                  yAxisWidth={220}
-                />
-              )}
-            </CardContent>
-          </Card>
-        ) : null}
-
-        {visibleCharts.includes("line") ? (
-          <Card
-            ref={lineChartRef}
-            className="rounded-2xl border-zinc-800 bg-zinc-900 text-white shadow-sm"
-          >
-            <CardHeader className="pb-1">
-              <div className="flex items-center justify-between">
-                <CardTitle className="text-sm font-medium text-zinc-400">
-                  Soma mensal das linhas da subtabela (por ano)
-                </CardTitle>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  className="h-8 w-8 rounded-lg p-0 text-zinc-300 hover:bg-zinc-800"
-                  onClick={() => exportChartAsPng1080p(lineChartRef, "chart-mensal-agregado-por-ano-1080p.png")}
-                >
-                  <Download className="size-4" />
-                </Button>
-              </div>
-            </CardHeader>
-            <CardContent>
-              {isLoading ? (
-                <Skeleton className="h-72 w-full bg-zinc-800" />
-              ) : chartYearCategories.length === 0 ? (
-                <p className="py-8 text-center text-sm text-zinc-500">
-                  Sem dados de subtabela para os anos selecionados.
-                </p>
-              ) : (
-                <div className="h-72 w-full">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <RechartsLineChart
-                      data={monthlyTotalsByTableChartData}
-                      margin={{ top: 16, right: 16, left: 8, bottom: 8 }}
-                    >
-                      <CartesianGrid stroke="#3f3f46" strokeDasharray="3 3" />
-                      <XAxis
-                        dataKey="mes"
-                        interval={0}
-                        tick={{ fill: "#a1a1aa", fontSize: 12 }}
-                        axisLine={{ stroke: "#3f3f46" }}
-                        tickLine={{ stroke: "#3f3f46" }}
-                      />
-                      <YAxis
-                        tickFormatter={(value) => toCurrency(Number(value))}
-                        tick={{ fill: "#a1a1aa", fontSize: 12 }}
-                        width={170}
-                        axisLine={{ stroke: "#3f3f46" }}
-                        tickLine={{ stroke: "#3f3f46" }}
-                      />
-                      <Tooltip
-                        formatter={(value: number) => toCurrency(Number(value))}
-                        contentStyle={{
-                          backgroundColor: "#18181b",
-                          border: "1px solid #3f3f46",
-                          borderRadius: "8px",
-                        }}
-                        labelStyle={{ color: "#e4e4e7" }}
-                      />
-                      {chartYearCategories.length > 1 ? (
-                        <Legend wrapperStyle={{ color: "#d4d4d8", fontSize: 12 }} />
-                      ) : null}
-                      {chartYearCategories.map((category, index) => (
-                        (() => {
-                          const strokeColor =
-                            ["#3b82f6", "#06b6d4", "#6366f1", "#a855f7", "#f59e0b", "#10b981"][
-                              index % 6
-                            ];
-                          return (
-                        <Line
-                          key={category}
-                          type="monotone"
-                          dataKey={category}
-                          stroke={strokeColor}
-                          strokeWidth={3}
-                          strokeOpacity={1}
-                          fill="none"
-                          legendType="line"
-                          dot={{ r: 2, stroke: strokeColor, fill: strokeColor }}
-                          activeDot={{ r: 5, stroke: strokeColor, fill: "#18181b", strokeWidth: 2 }}
-                          connectNulls
-                          isAnimationActive={false}
-                        />
-                          );
-                        })()
-                      ))}
-                    </RechartsLineChart>
-                  </ResponsiveContainer>
-                </div>
-              )}
-            </CardContent>
-          </Card>
-        ) : null}
-
       </section>
     </>
   );

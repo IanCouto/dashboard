@@ -24,8 +24,11 @@ export type DashboardAggregations = {
   yearlyTables: {
     ano: number;
     rows: {
+      regiao: string;
       promotor: string;
+      tipo_contrato: string;
       coordenador: string;
+      codigo_cliente: string;
       descricao_cliente: string;
       tipo_faturamento: string;
       total: number;
@@ -62,8 +65,11 @@ export async function getDashboardAggregations(
     prisma.record.groupBy({
       by: [
         "ano",
+        "regiao",
         "promotor",
+        "tipo_contrato",
         "coordenador",
+        "codigo_cliente",
         "descricao_cliente",
         "tipo_faturamento",
       ],
@@ -74,8 +80,11 @@ export async function getDashboardAggregations(
     prisma.record.groupBy({
       by: [
         "ano",
+        "regiao",
         "promotor",
+        "tipo_contrato",
         "coordenador",
+        "codigo_cliente",
         "descricao_cliente",
         "tipo_faturamento",
         "mes",
@@ -89,17 +98,32 @@ export async function getDashboardAggregations(
   const monthlyByRowKey = new Map<string, { mes: number; total: number }[]>();
   const buildRowKey = (
     ano: number,
+    regiao: string,
     promotor: string,
+    tipo_contrato: string,
     coordenador: string,
+    codigo_cliente: string,
     descricao_cliente: string,
     tipo_faturamento: string
-  ) => [ano, promotor, coordenador, descricao_cliente, tipo_faturamento].join("||");
+  ) => [
+    ano,
+    regiao,
+    promotor,
+    tipo_contrato,
+    coordenador,
+    codigo_cliente,
+    descricao_cliente,
+    tipo_faturamento,
+  ].join("||");
 
   for (const row of tableRowsMonthlyRaw) {
     const key = buildRowKey(
       row.ano,
+      row.regiao,
       row.promotor,
+      row.tipo_contrato,
       row.coordenador,
+      row.codigo_cliente,
       row.descricao_cliente,
       row.tipo_faturamento
     );
@@ -115,10 +139,14 @@ export async function getDashboardAggregations(
     number,
     {
       promotor: string;
+      regiao: string;
+      tipo_contrato: string;
       coordenador: string;
+      codigo_cliente: string;
       descricao_cliente: string;
       tipo_faturamento: string;
       total: number;
+      monthlyBreakdown: { mes: number; total: number }[];
     }[]
   >();
 
@@ -126,14 +154,20 @@ export async function getDashboardAggregations(
     const current = tableMap.get(row.ano) ?? [];
     const key = buildRowKey(
       row.ano,
+      row.regiao,
       row.promotor,
+      row.tipo_contrato,
       row.coordenador,
+      row.codigo_cliente,
       row.descricao_cliente,
       row.tipo_faturamento
     );
     current.push({
+      regiao: row.regiao,
       promotor: row.promotor,
+      tipo_contrato: row.tipo_contrato,
       coordenador: row.coordenador,
+      codigo_cliente: row.codigo_cliente,
       descricao_cliente: row.descricao_cliente,
       tipo_faturamento: row.tipo_faturamento,
       total: Number(row._sum.valor ?? 0),

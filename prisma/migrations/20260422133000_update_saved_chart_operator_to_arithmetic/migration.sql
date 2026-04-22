@@ -1,0 +1,2 @@
+-- Intentionally left as a no-op.
+-- This migration folder is kept only to preserve migration history consistency.

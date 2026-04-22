@@ -12,6 +12,23 @@ datasource db {
   provider = "postgresql"
 }
 
+enum SavedChartType {
+  bar
+  column
+  line
+}
+
+enum SavedChartOperator {
+  eq
+  neq
+  gt
+  gte
+  lt
+  lte
+  contains
+  in
+}
+
 model Record {
   id               Int      @id @default(autoincrement())
   regiao           String
@@ -35,4 +52,21 @@ model Record {
   @@index([tipo_faturamento])
   @@index([mes])
   @@map("records")
+}
+
+model SavedChart {
+  id                 String             @id @default(cuid())
+  name               String
+  chartType          SavedChartType
+  xField             String
+  yField             String
+  comparisonField    String?
+  comparisonOperator SavedChartOperator?
+  comparisonValue    Json?
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+
+  @@index([name])
+  @@index([updatedAt(sort: Desc)])
+  @@map("saved_charts")
 }
