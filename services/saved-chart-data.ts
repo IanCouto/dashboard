@@ -105,6 +105,10 @@ export async function getSavedChartData(
   const rowFields = chart.pivotConfig?.rowFields ?? [];
   const columnField: SavedChartDto["xField"] | "mes" =
     chart.chartType === "line" ? "mes" : (chart.pivotConfig?.columnField ?? chart.xField);
+  const effectiveRowFields =
+    chart.chartType === "line"
+      ? rowFields
+      : rowFields.filter((field) => field !== columnField);
 
   const rowsByX = filteredRows
     .slice()
@@ -123,14 +127,14 @@ export async function getSavedChartData(
       chart.chartType === "line"
         ? (() => {
             const baseLabel =
-              rowFields.length > 0
-                ? rowFields.map((field) => String(row[field as keyof SubtableSourceRow])).join(" / ")
+              effectiveRowFields.length > 0
+                ? effectiveRowFields.map((field) => String(row[field as keyof SubtableSourceRow])).join(" / ")
                 : "Total";
-            const alreadyIncludesTipo = rowFields.includes("tipo_faturamento");
+            const alreadyIncludesTipo = effectiveRowFields.includes("tipo_faturamento");
             return alreadyIncludesTipo ? baseLabel : `${baseLabel} / ${row.tipo_faturamento}`;
           })()
-        : rowFields.length > 0
-          ? rowFields.map((field) => String(row[field as keyof SubtableSourceRow])).join(" / ")
+        : effectiveRowFields.length > 0
+          ? effectiveRowFields.map((field) => String(row[field as keyof SubtableSourceRow])).join(" / ")
           : "Total";
     rowLabelsSeen.add(rowLabel);
     const columnValue = String(getSourceValue(row, columnField));

@@ -41,6 +41,13 @@ const currency = new Intl.NumberFormat("pt-BR", {
   currency: "BRL",
   maximumFractionDigits: 2,
 });
+const quantity = new Intl.NumberFormat("pt-BR", {
+  maximumFractionDigits: 2,
+});
+const percentage = new Intl.NumberFormat("pt-BR", {
+  style: "percent",
+  maximumFractionDigits: 2,
+});
 
 const monthLabelByNumber: Record<number, string> = {
   1: "Janeiro",
@@ -59,6 +66,73 @@ const monthLabelByNumber: Record<number, string> = {
 
 function toCurrency(value: number) {
   return currency.format(value);
+}
+
+function toQuantity(value: number) {
+  return quantity.format(value);
+}
+
+function isTreinamentosLabel(label: string) {
+  return label.toUpperCase().includes("TREINAMENTOS");
+}
+
+function formatValueByLabel(value: number, label: string) {
+  return isTreinamentosLabel(label) ? toQuantity(value) : toCurrency(value);
+}
+
+function stripTotalPrefix(label: string) {
+  return label.replace(/^Total \| /, "").replace(/^Total \/ /, "");
+}
+
+function toPercent(value: number | null) {
+  if (value === null || !Number.isFinite(value)) {
+    return "-";
+  }
+  return percentage.format(value);
+}
+
+const billingDivisionPairs = [
+  { numerator: "REALIZADO SELL IN", denominator: "META SELL IN" },
+  { numerator: "REALIZADO SELL OUT - VB CAMPO", denominator: "META SELL OUT - VB CAMPO" },
+  { numerator: "REALIZADO TREINAMENTOS", denominator: "META TREINAMENTOS" },
+  { numerator: "REALIZADO SELL OUT - LOJA", denominator: "ESTOQUE LOJA" },
+  { numerator: "REALIZADO SELL OUT - VB CAMPO", denominator: "REALIZADO SELL OUT - LOJA" },
+] as const;
+
+function getDenominatorLabel(label: string): string | null {
+  for (const pair of billingDivisionPairs) {
+    if (label.includes(pair.numerator)) {
+      return label.replace(pair.numerator, pair.denominator);
+    }
+  }
+  return null;
+}
+
+function getDenominatorLabelFromAvailable(
+  label: string,
+  availableLabels: Set<string>
+): string | null {
+  const candidatePairs = billingDivisionPairs.filter((pair) => label.includes(pair.numerator));
+  if (candidatePairs.length === 0) {
+    return null;
+  }
+
+  for (const pair of candidatePairs) {
+    const denominatorLabel = label.replace(pair.numerator, pair.denominator);
+    if (availableLabels.has(denominatorLabel)) {
+      return denominatorLabel;
+    }
+  }
+
+  const [firstPair] = candidatePairs;
+  return firstPair ? label.replace(firstPair.numerator, firstPair.denominator) : null;
+}
+
+function safeDivide(numerator: number, denominator: number): number | null {
+  if (!Number.isFinite(numerator) || !Number.isFinite(denominator) || denominator === 0) {
+    return null;
+  }
+  return numerator / denominator;
 }
 
 function formValuesToPayload(values: SavedChartFormValues) {
@@ -102,6 +176,17 @@ type SubtableRow = {
   total: number;
   monthlyBreakdown: { mes: number; total: number }[];
 };
+
+function getSubtableRowIdentity(row: SubtableRow) {
+  return [
+    row.regiao,
+    row.promotor,
+    row.tipo_contrato,
+    row.coordenador,
+    row.codigo_cliente,
+    row.descricao_cliente,
+  ].join("||");
+}
 
 function sortSubtableRows(
   rows: SubtableRow[],
@@ -326,7 +411,7 @@ export function DashboardOverview() {
     for (const point of data) {
       const [rowLabel] = point.label.split(" | ");
       if (rowLabel) {
-        rows.add(rowLabel);
+        rows.add(stripTotalPrefix(rowLabel));
       }
     }
     return Array.from(rows.values());
@@ -340,7 +425,7 @@ export function DashboardOverview() {
     for (const point of data) {
       const [rowLabel, columnLabel] = point.label.split(" | ");
       const column = columnLabel ?? "Sem coluna";
-      const row = rowLabel ?? "Serie";
+      const row = rowLabel ? stripTotalPrefix(rowLabel) : "Serie";
       const current = byColumn.get(column) ?? { coluna: column };
       current[row] = point.value;
       byColumn.set(column, current);
@@ -579,6 +664,37 @@ export function DashboardOverview() {
           const chartData = chartQuery?.data ?? [];
           const lineSeries = getLineSeries(chart, chartData);
           const lineData = getLineData(chart, chartData);
+          const chartIsQuantity = chartData.length > 0 && chartData.every((item) => isTreinamentosLabel(item.label));
+          const chartValueByLabel = new Map(chartData.map((item) => [item.label, item.value]));
+          const availableChartLabels = new Set(chartData.map((item) => item.label));
+          const barColumnData = chartData.map((item) => {
+            const denominatorLabel = getDenominatorLabelFromAvailable(item.label, availableChartLabels);
+            const denominatorValue = denominatorLabel ? chartValueByLabel.get(denominatorLabel) ?? 0 : 0;
+            return {
+              label: stripTotalPrefix(item.label),
+              valor: item.value,
+              percent: denominatorLabel ? safeDivide(item.value, denominatorValue) : null,
+            };
+          });
+          const lineDataWithPercent = lineData.map((item) => {
+            const enriched: Record<string, string | number> = { ...item };
+            for (const [seriesLabel, seriesValue] of Object.entries(item)) {
+              if (seriesLabel === "coluna") {
+                continue;
+              }
+              const denominatorLabel = getDenominatorLabel(seriesLabel);
+              const denominatorValue =
+                denominatorLabel && typeof item[denominatorLabel] === "number"
+                  ? Number(item[denominatorLabel])
+                  : 0;
+              const numeratorValue = Number(seriesValue);
+              const percentValue = denominatorLabel
+                ? safeDivide(numeratorValue, denominatorValue)
+                : null;
+              enriched[`${seriesLabel}__percent`] = percentValue ?? "-";
+            }
+            return enriched;
+          });
 
           return (
       <Card key={chart.id} className="rounded-2xl border-zinc-800 bg-zinc-900 text-white shadow-sm">
@@ -598,17 +714,16 @@ export function DashboardOverview() {
             <div className="h-96 w-full">
               <ResponsiveContainer width="100%" height="100%">
                 <RechartsBarChart
-                  data={chartData.map((item) => ({
-                    label: item.label,
-                    valor: item.value,
-                  }))}
+                  data={barColumnData}
                   layout="vertical"
                   margin={{ top: 12, right: 20, left: 20, bottom: 12 }}
                 >
                   <CartesianGrid stroke="#3f3f46" strokeDasharray="3 3" />
                   <XAxis
                     type="number"
-                    tickFormatter={(value) => toCurrency(Number(value))}
+                    tickFormatter={(value) =>
+                      chartIsQuantity ? toQuantity(Number(value)) : toCurrency(Number(value))
+                    }
                     tick={{ fill: "#a1a1aa", fontSize: 12 }}
                     axisLine={{ stroke: "#3f3f46" }}
                     tickLine={{ stroke: "#3f3f46" }}
@@ -622,7 +737,11 @@ export function DashboardOverview() {
                     tickLine={{ stroke: "#3f3f46" }}
                   />
                   <Tooltip
-                    formatter={(value: number) => toCurrency(Number(value))}
+                    formatter={(value: number, _name, item) => {
+                      const percentValue = (item?.payload as { percent?: number | null })?.percent ?? null;
+                      const label = String((item?.payload as { label?: string })?.label ?? "");
+                      return `${formatValueByLabel(Number(value), label)} | %: ${toPercent(percentValue)}`;
+                    }}
                     cursor={false}
                     contentStyle={{
                       backgroundColor: "#18181b",
@@ -647,10 +766,7 @@ export function DashboardOverview() {
             <div className="h-96 w-full">
               <ResponsiveContainer width="100%" height="100%">
                 <RechartsBarChart
-                  data={chartData.map((item) => ({
-                    label: item.label,
-                    valor: item.value,
-                  }))}
+                  data={barColumnData}
                   margin={{ top: 12, right: 20, left: 8, bottom: 12 }}
                 >
                   <CartesianGrid stroke="#3f3f46" strokeDasharray="3 3" />
@@ -661,14 +777,20 @@ export function DashboardOverview() {
                     tickLine={{ stroke: "#3f3f46" }}
                   />
                   <YAxis
-                    tickFormatter={(value) => toCurrency(Number(value))}
+                    tickFormatter={(value) =>
+                      chartIsQuantity ? toQuantity(Number(value)) : toCurrency(Number(value))
+                    }
                     tick={{ fill: "#a1a1aa", fontSize: 12 }}
                     width={170}
                     axisLine={{ stroke: "#3f3f46" }}
                     tickLine={{ stroke: "#3f3f46" }}
                   />
                   <Tooltip
-                    formatter={(value: number) => toCurrency(Number(value))}
+                    formatter={(value: number, _name, item) => {
+                      const percentValue = (item?.payload as { percent?: number | null })?.percent ?? null;
+                      const label = String((item?.payload as { label?: string })?.label ?? "");
+                      return `${formatValueByLabel(Number(value), label)} | %: ${toPercent(percentValue)}`;
+                    }}
                     cursor={false}
                     contentStyle={{
                       backgroundColor: "#18181b",
@@ -692,7 +814,7 @@ export function DashboardOverview() {
           ) : (
             <div className="h-72 w-full">
               <ResponsiveContainer width="100%" height="100%">
-                <RechartsLineChart data={lineData}>
+                <RechartsLineChart data={lineDataWithPercent}>
                   <CartesianGrid stroke="#3f3f46" strokeDasharray="3 3" />
                   <XAxis
                     dataKey="coluna"
@@ -702,14 +824,25 @@ export function DashboardOverview() {
                     tickLine={{ stroke: "#3f3f46" }}
                   />
                   <YAxis
-                    tickFormatter={(value) => toCurrency(Number(value))}
+                    tickFormatter={(value) =>
+                      chartIsQuantity ? toQuantity(Number(value)) : toCurrency(Number(value))
+                    }
                     tick={{ fill: "#a1a1aa", fontSize: 12 }}
                     width={170}
                     axisLine={{ stroke: "#3f3f46" }}
                     tickLine={{ stroke: "#3f3f46" }}
                   />
                   <Tooltip
-                    formatter={(value: number) => toCurrency(Number(value))}
+                    formatter={(value: number, seriesName, item) => {
+                      const percentKey = `${String(seriesName)}__percent`;
+                      const percentRaw = (item?.payload as Record<string, unknown> | undefined)?.[percentKey];
+                      const percentValue = typeof percentRaw === "number" ? percentRaw : null;
+                      const denominatorLabel = getDenominatorLabel(String(seriesName));
+                      if (!denominatorLabel) {
+                        return chartIsQuantity ? toQuantity(Number(value)) : toCurrency(Number(value));
+                      }
+                      return `${chartIsQuantity ? toQuantity(Number(value)) : toCurrency(Number(value))} | %: ${toPercent(percentValue)}`;
+                    }}
                     labelFormatter={(value) => monthLabelByNumber[Number(value)] ?? String(value)}
                     contentStyle={{
                       backgroundColor: "#18181b",
@@ -752,6 +885,14 @@ export function DashboardOverview() {
         {selectedYearTables.map((table) => {
           const sortState = subtableSortByYear[table.ano];
           const sortedRows = sortSubtableRows(table.rows as SubtableRow[], table.ano, sortState);
+          const tableRows = table.rows as SubtableRow[];
+          const totalByIdentityAndTipo = new Map<string, number>();
+          for (const row of tableRows) {
+            totalByIdentityAndTipo.set(
+              `${getSubtableRowIdentity(row)}||${row.tipo_faturamento}`,
+              row.total
+            );
+          }
 
           const sortIndicator = (column: SubtableSortColumn) => {
             if (sortState?.column !== column) {
@@ -869,59 +1010,77 @@ export function DashboardOverview() {
                           Total{sortIndicator("total")}
                         </button>
                       </th>
+                      <th className="px-3 py-2 text-xs font-medium text-zinc-400">%</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {sortedRows.map((row, index) => (
-                      <tr
-                        key={`${table.ano}-${row.promotor}-${row.tipo_faturamento}-${index}`}
-                        onMouseEnter={() =>
-                          setHoveredRowDetails({
-                            ano: table.ano,
-                            promotor: row.promotor,
-                            tipoFaturamento: row.tipo_faturamento,
-                            monthlyBreakdown: row.monthlyBreakdown,
-                          })
-                        }
-                        onMouseLeave={() => {
-                          if (!pinnedRowDetails) {
-                            setHoveredRowDetails(null);
-                          }
-                        }}
-                        onClick={() => {
-                          const nextDetails = {
-                            ano: table.ano,
-                            promotor: row.promotor,
-                            tipoFaturamento: row.tipo_faturamento,
-                            monthlyBreakdown: row.monthlyBreakdown,
-                          };
+                    {sortedRows.map((row, index) => {
+                      const denominatorLabel = getDenominatorLabel(row.tipo_faturamento);
+                      const denominatorValue = denominatorLabel
+                        ? totalByIdentityAndTipo.get(
+                            `${getSubtableRowIdentity(row)}||${denominatorLabel}`
+                          ) ?? 0
+                        : 0;
+                      const percentValue = denominatorLabel
+                        ? safeDivide(row.total, denominatorValue)
+                        : null;
 
-                          const isSamePinned =
-                            pinnedRowDetails?.ano === nextDetails.ano &&
-                            pinnedRowDetails.promotor === nextDetails.promotor &&
-                            pinnedRowDetails.tipoFaturamento === nextDetails.tipoFaturamento;
-
-                          if (isSamePinned) {
-                            setPinnedRowDetails(null);
-                          } else {
-                            setPinnedRowDetails(nextDetails);
+                      return (
+                        <tr
+                          key={`${table.ano}-${row.promotor}-${row.tipo_faturamento}-${index}`}
+                          onMouseEnter={() =>
+                            setHoveredRowDetails({
+                              ano: table.ano,
+                              promotor: row.promotor,
+                              tipoFaturamento: row.tipo_faturamento,
+                              monthlyBreakdown: row.monthlyBreakdown,
+                            })
                           }
-                        }}
-                        className={`border-b border-zinc-800/60 ${
-                          index % 2 === 0 ? "bg-zinc-900" : "bg-zinc-950/40"
-                        } cursor-pointer hover:bg-zinc-800/60`}
-                      >
-                        <td className="px-3 py-2">{row.regiao}</td>
-                        <td className="px-3 py-2">{row.promotor}</td>
-                        <td className="px-3 py-2">{row.tipo_contrato}</td>
-                        <td className="px-3 py-2">{row.coordenador}</td>
-                        <td className="px-3 py-2">{row.codigo_cliente}</td>
-                        <td className="px-3 py-2">{row.descricao_cliente}</td>
-                        <td className="px-3 py-2">{row.tipo_faturamento}</td>
-                        <td className="px-3 py-2">{table.ano}</td>
-                        <td className="px-3 py-2">{toCurrency(row.total)}</td>
-                      </tr>
-                    ))}
+                          onMouseLeave={() => {
+                            if (!pinnedRowDetails) {
+                              setHoveredRowDetails(null);
+                            }
+                          }}
+                          onClick={() => {
+                            const nextDetails = {
+                              ano: table.ano,
+                              promotor: row.promotor,
+                              tipoFaturamento: row.tipo_faturamento,
+                              monthlyBreakdown: row.monthlyBreakdown,
+                            };
+
+                            const isSamePinned =
+                              pinnedRowDetails?.ano === nextDetails.ano &&
+                              pinnedRowDetails.promotor === nextDetails.promotor &&
+                              pinnedRowDetails.tipoFaturamento === nextDetails.tipoFaturamento;
+
+                            if (isSamePinned) {
+                              setPinnedRowDetails(null);
+                            } else {
+                              setPinnedRowDetails(nextDetails);
+                            }
+                          }}
+                          className={`border-b border-zinc-800/60 ${
+                            index % 2 === 0 ? "bg-zinc-900" : "bg-zinc-950/40"
+                          } cursor-pointer hover:bg-zinc-800/60`}
+                        >
+                          <td className="px-3 py-2">{row.regiao}</td>
+                          <td className="px-3 py-2">{row.promotor}</td>
+                          <td className="px-3 py-2">{row.tipo_contrato}</td>
+                          <td className="px-3 py-2">{row.coordenador}</td>
+                          <td className="px-3 py-2">{row.codigo_cliente}</td>
+                          <td className="px-3 py-2">{row.descricao_cliente}</td>
+                          <td className="px-3 py-2">{row.tipo_faturamento}</td>
+                          <td className="px-3 py-2">{table.ano}</td>
+                          <td className="px-3 py-2">
+                            {isTreinamentosLabel(row.tipo_faturamento)
+                              ? toQuantity(row.total)
+                              : toCurrency(row.total)}
+                          </td>
+                          <td className="px-3 py-2">{toPercent(percentValue)}</td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -944,7 +1103,13 @@ export function DashboardOverview() {
                           <span className="text-zinc-500">
                             {monthLabelByNumber[item.mes] ?? item.mes}:
                           </span>{" "}
-                          <span className="text-zinc-200">{toCurrency(item.total)}</span>
+                          <span className="text-zinc-200">
+                            {isTreinamentosLabel(
+                              (pinnedRowDetails ?? hoveredRowDetails)?.tipoFaturamento ?? ""
+                            )
+                              ? toQuantity(item.total)
+                              : toCurrency(item.total)}
+                          </span>
                         </div>
                       ))}
                   </div>
