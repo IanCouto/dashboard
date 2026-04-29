@@ -34,6 +34,7 @@ type SubtableSourceRow = {
   descricao_cliente: string;
   tipo_faturamento: string;
   ano: number;
+  mes: number;
   total: number;
 };
 
@@ -59,19 +60,38 @@ export async function getSavedChartData(
   filters: DashboardFilters
 ): Promise<SavedChartDataPoint[]> {
   const aggregations = await getDashboardAggregations(filters);
-  const sourceRows: SubtableSourceRow[] = aggregations.yearlyTables.flatMap((table) =>
-    table.rows.map((row) => ({
-      regiao: row.regiao,
-      promotor: row.promotor,
-      tipo_contrato: row.tipo_contrato,
-      coordenador: row.coordenador,
-      codigo_cliente: row.codigo_cliente,
-      descricao_cliente: row.descricao_cliente,
-      tipo_faturamento: row.tipo_faturamento,
-      ano: table.ano,
-      total: toNumber(row.total),
-    }))
-  );
+  const sourceRows: SubtableSourceRow[] =
+    chart.chartType === "line"
+      ? aggregations.yearlyTables.flatMap((table) =>
+          table.rows.flatMap((row) =>
+            row.monthlyBreakdown.map((monthPoint) => ({
+              regiao: row.regiao,
+              promotor: row.promotor,
+              tipo_contrato: row.tipo_contrato,
+              coordenador: row.coordenador,
+              codigo_cliente: row.codigo_cliente,
+              descricao_cliente: row.descricao_cliente,
+              tipo_faturamento: row.tipo_faturamento,
+              ano: table.ano,
+              mes: monthPoint.mes,
+              total: toNumber(monthPoint.total),
+            }))
+          )
+        )
+      : aggregations.yearlyTables.flatMap((table) =>
+          table.rows.map((row) => ({
+            regiao: row.regiao,
+            promotor: row.promotor,
+            tipo_contrato: row.tipo_contrato,
+            coordenador: row.coordenador,
+            codigo_cliente: row.codigo_cliente,
+            descricao_cliente: row.descricao_cliente,
+            tipo_faturamento: row.tipo_faturamento,
+            ano: table.ano,
+            mes: 0,
+            total: toNumber(row.total),
+          }))
+        );
 
   const filteredRows =
     chart.pivotConfig?.filterField && chart.pivotConfig?.filterValue
@@ -83,7 +103,8 @@ export async function getSavedChartData(
       : sourceRows;
 
   const rowFields = chart.pivotConfig?.rowFields ?? [];
-  const columnField = chart.pivotConfig?.columnField ?? chart.xField;
+  const columnField: SavedChartDto["xField"] | "mes" =
+    chart.chartType === "line" ? "mes" : (chart.pivotConfig?.columnField ?? chart.xField);
 
   const rowsByX = filteredRows
     .slice()
@@ -96,11 +117,22 @@ export async function getSavedChartData(
 
   const points = new Map<string, number>();
   const valueBuckets = new Map<string, number[]>();
+  const rowLabelsSeen = new Set<string>();
   for (const row of rowsByX) {
     const rowLabel =
-      rowFields.length > 0
-        ? rowFields.map((field) => String(row[field as keyof SubtableSourceRow])).join(" / ")
-        : "Total";
+      chart.chartType === "line"
+        ? (() => {
+            const baseLabel =
+              rowFields.length > 0
+                ? rowFields.map((field) => String(row[field as keyof SubtableSourceRow])).join(" / ")
+                : "Total";
+            const alreadyIncludesTipo = rowFields.includes("tipo_faturamento");
+            return alreadyIncludesTipo ? baseLabel : `${baseLabel} / ${row.tipo_faturamento}`;
+          })()
+        : rowFields.length > 0
+          ? rowFields.map((field) => String(row[field as keyof SubtableSourceRow])).join(" / ")
+          : "Total";
+    rowLabelsSeen.add(rowLabel);
     const columnValue = String(getSourceValue(row, columnField));
     const yValue = toNumber(getSourceValue(row, chart.yField));
     const label = `${rowLabel} | ${columnValue}`;

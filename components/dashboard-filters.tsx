@@ -69,7 +69,7 @@ export const initialFilters: DashboardFilters = {
 const monthLabelByNumber: Record<number, string> = {
   1: "Janeiro",
   2: "Fevereiro",
-  3: "Marco",
+  3: "Março",
   4: "Abril",
   5: "Maio",
   6: "Junho",
@@ -184,10 +184,28 @@ export function DashboardFilters({ filters, onChange }: DashboardFiltersProps) {
     const shouldRemove = group.values.every((value) => filters.tiposFaturamento.includes(value));
     const groupValuesSet = new Set<string>(group.values);
 
+    const otherSelectedGroups = billingTypeGroups.filter((item) => {
+      if (item.id === group.id) {
+        return false;
+      }
+
+      return item.values.every((value) => filters.tiposFaturamento.includes(value));
+    });
+
+    const valuesUsedByOtherSelectedGroups = new Set<string>(
+      otherSelectedGroups.flatMap((item) => item.values)
+    );
+
     onChange({
       ...filters,
       tiposFaturamento: shouldRemove
-        ? filters.tiposFaturamento.filter((value) => !groupValuesSet.has(value))
+        ? filters.tiposFaturamento.filter((value) => {
+            if (!groupValuesSet.has(value)) {
+              return true;
+            }
+
+            return valuesUsedByOtherSelectedGroups.has(value);
+          })
         : Array.from(new Set([...filters.tiposFaturamento, ...group.values])),
     });
   }, [filters, onChange]);
@@ -279,10 +297,6 @@ export function DashboardFilters({ filters, onChange }: DashboardFiltersProps) {
           </>
         ) : null}
       </div>
-
-      {isFetching && !isLoading ? (
-        <p className="mt-3 text-xs text-zinc-500">Atualizando opcoes...</p>
-      ) : null}
     </section>
   );
 }

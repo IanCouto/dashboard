@@ -16,7 +16,7 @@ import {
   YAxis,
 } from "recharts";
 import { utils, writeFileXLSX } from "xlsx";
-import { Download } from "lucide-react";
+import { ChevronDown, Download } from "lucide-react";
 import { createSavedChartAction } from "@/app/actions/create-saved-chart";
 import { deleteSavedChartAction } from "@/app/actions/delete-saved-chart";
 import { getChartFieldsAction } from "@/app/actions/get-chart-fields";
@@ -45,7 +45,7 @@ const currency = new Intl.NumberFormat("pt-BR", {
 const monthLabelByNumber: Record<number, string> = {
   1: "Janeiro",
   2: "Fevereiro",
-  3: "Marco",
+  3: "Março",
   4: "Abril",
   5: "Maio",
   6: "Junho",
@@ -176,6 +176,7 @@ export function DashboardOverview() {
   const [editingChart, setEditingChart] = useState<SavedChartDto | null>(null);
   const [selectedChartIds, setSelectedChartIds] = useState<string[]>([]);
   const [chartSearch, setChartSearch] = useState("");
+  const [isSavedChartsOpen, setIsSavedChartsOpen] = useState(true);
 
   const chartsById = useMemo(
     () => new Map((savedChartsQuery.data ?? []).map((chart) => [chart.id, chart])),
@@ -344,9 +345,10 @@ export function DashboardOverview() {
       current[row] = point.value;
       byColumn.set(column, current);
     }
-    return Array.from(byColumn.values()).sort((a, b) =>
-      String(a.coluna).localeCompare(String(b.coluna), "pt-BR")
+    const normalized = Array.from(byColumn.values()).sort((a, b) =>
+      Number(String(a.coluna)) - Number(String(b.coluna))
     );
+    return normalized;
   }, []);
 
 
@@ -416,7 +418,18 @@ export function DashboardOverview() {
         <Card className="rounded-2xl border-zinc-800 bg-zinc-900 text-white shadow-sm">
           <CardHeader className="pb-2">
             <div className="flex items-center justify-between gap-3">
-              <CardTitle className="text-sm font-medium text-zinc-300">Graficos salvos</CardTitle>
+              <button
+                type="button"
+                onClick={() => setIsSavedChartsOpen((current) => !current)}
+                className="flex items-center gap-2 text-left"
+              >
+                <CardTitle className="text-sm font-medium text-zinc-300">Graficos salvos</CardTitle>
+                <ChevronDown
+                  className={`size-4 text-zinc-500 transition-transform ${
+                    isSavedChartsOpen ? "rotate-180" : ""
+                  }`}
+                />
+              </button>
               <Button
                 type="button"
                 className="rounded-xl bg-blue-600 text-white hover:bg-blue-500"
@@ -426,7 +439,8 @@ export function DashboardOverview() {
               </Button>
             </div>
           </CardHeader>
-          <CardContent className="space-y-2">
+          {isSavedChartsOpen ? (
+            <CardContent className="space-y-2">
             <input
               value={chartSearch}
               onChange={(event) => setChartSearch(event.target.value)}
@@ -502,7 +516,8 @@ export function DashboardOverview() {
                 );
               })
             )}
-          </CardContent>
+            </CardContent>
+          ) : null}
         </Card>
       </section>
 
@@ -681,6 +696,7 @@ export function DashboardOverview() {
                   <CartesianGrid stroke="#3f3f46" strokeDasharray="3 3" />
                   <XAxis
                     dataKey="coluna"
+                    tickFormatter={(value) => monthLabelByNumber[Number(value)] ?? String(value)}
                     tick={{ fill: "#a1a1aa", fontSize: 12 }}
                     axisLine={{ stroke: "#3f3f46" }}
                     tickLine={{ stroke: "#3f3f46" }}
@@ -694,6 +710,7 @@ export function DashboardOverview() {
                   />
                   <Tooltip
                     formatter={(value: number) => toCurrency(Number(value))}
+                    labelFormatter={(value) => monthLabelByNumber[Number(value)] ?? String(value)}
                     contentStyle={{
                       backgroundColor: "#18181b",
                       border: "1px solid #3f3f46",

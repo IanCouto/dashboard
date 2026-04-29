@@ -96,7 +96,7 @@ export function SavedChartForm({
       className="space-y-3 rounded-2xl border border-zinc-800 bg-zinc-900 p-4"
       onSubmit={(event) => {
         event.preventDefault();
-        onSubmit(values);
+        onSubmit({ ...values, yField: "total" });
       }}
     >
       <div className="flex items-center justify-between gap-3">
@@ -116,7 +116,7 @@ export function SavedChartForm({
         ) : null}
       </div>
 
-      <div className="grid gap-3 md:grid-cols-3">
+      <div className="grid gap-3 md:grid-cols-2">
         <label className="space-y-1 text-xs text-zinc-400">
           Nome
           <input
@@ -164,24 +164,6 @@ export function SavedChartForm({
         </label>
 
         <label className="space-y-1 text-xs text-zinc-400">
-          Valor
-          <select
-            value={values.yField}
-            onChange={(event) =>
-              setValues((current) => ({ ...current, yField: event.target.value as RecordFieldKey }))
-            }
-            className="w-full rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm text-zinc-100"
-          >
-            {fields
-              .filter((field) => field.type === "number")
-              .map((field) => (
-                <option key={field.key} value={field.key}>
-                  {field.label}
-                </option>
-              ))}
-          </select>
-        </label>
-        <label className="space-y-1 text-xs text-zinc-400">
           Operacao
           <select
             value={values.valueOperation}
@@ -202,33 +184,31 @@ export function SavedChartForm({
         </label>
       </div>
 
-      <div className="grid gap-3 md:grid-cols-1">
-        <div className="space-y-1 text-xs text-zinc-400">
-          Linhas
-          <div className="max-h-32 space-y-1 overflow-auto rounded-lg border border-zinc-700 bg-zinc-950 p-2">
-            {fields
-              .filter((field) => field.type === "string")
-              .map((field) => {
-                const checked = values.rowFields.includes(field.key);
-                return (
-                  <label key={field.key} className="flex items-center gap-2 text-xs text-zinc-200">
-                    <input
-                      type="checkbox"
-                      checked={checked}
-                      onChange={() =>
-                        setValues((current) => ({
-                          ...current,
-                          rowFields: checked
-                            ? current.rowFields.filter((item) => item !== field.key)
-                            : [...current.rowFields, field.key],
-                        }))
-                      }
-                    />
-                    {field.label}
-                  </label>
-                );
-              })}
-          </div>
+      <div className="space-y-1 text-xs text-zinc-400">
+        Linhas
+        <div className="max-h-32 space-y-1 overflow-auto rounded-lg border border-zinc-700 bg-zinc-950 p-2">
+          {fields
+            .filter((field) => field.type === "string" && field.key !== "tipo_faturamento")
+            .map((field) => {
+              const checked = values.rowFields.includes(field.key);
+              return (
+                <label key={field.key} className="flex items-center gap-2 text-xs text-zinc-200">
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    onChange={() =>
+                      setValues((current) => ({
+                        ...current,
+                        rowFields: checked
+                          ? current.rowFields.filter((item) => item !== field.key)
+                          : [...current.rowFields, field.key],
+                      }))
+                    }
+                  />
+                  {field.label}
+                </label>
+              );
+            })}
         </div>
       </div>
 
