@@ -342,12 +342,6 @@ export function DashboardOverview() {
     },
   });
 
-  const [hoveredRowDetails, setHoveredRowDetails] = useState<{
-    ano: number;
-    promotor: string;
-    tipoFaturamento: string;
-    monthlyBreakdown: { mes: number; total: number }[];
-  } | null>(null);
   const [pinnedRowDetails, setPinnedRowDetails] = useState<{
     ano: number;
     promotor: string;
@@ -678,11 +672,17 @@ export function DashboardOverview() {
           });
           const lineDataWithPercent = lineData.map((item) => {
             const enriched: Record<string, string | number> = { ...item };
+            const availableSeriesLabels = new Set(
+              Object.keys(item).filter((key) => key !== "coluna")
+            );
             for (const [seriesLabel, seriesValue] of Object.entries(item)) {
               if (seriesLabel === "coluna") {
                 continue;
               }
-              const denominatorLabel = getDenominatorLabel(seriesLabel);
+              const denominatorLabel = getDenominatorLabelFromAvailable(
+                seriesLabel,
+                availableSeriesLabels
+              );
               const denominatorValue =
                 denominatorLabel && typeof item[denominatorLabel] === "number"
                   ? Number(item[denominatorLabel])
@@ -740,7 +740,7 @@ export function DashboardOverview() {
                     formatter={(value: number, _name, item) => {
                       const percentValue = (item?.payload as { percent?: number | null })?.percent ?? null;
                       const label = String((item?.payload as { label?: string })?.label ?? "");
-                      return `${formatValueByLabel(Number(value), label)} | %: ${toPercent(percentValue)}`;
+                      return `${formatValueByLabel(Number(value), label)} | atingiu: ${toPercent(percentValue)}`;
                     }}
                     cursor={false}
                     contentStyle={{
@@ -789,7 +789,7 @@ export function DashboardOverview() {
                     formatter={(value: number, _name, item) => {
                       const percentValue = (item?.payload as { percent?: number | null })?.percent ?? null;
                       const label = String((item?.payload as { label?: string })?.label ?? "");
-                      return `${formatValueByLabel(Number(value), label)} | %: ${toPercent(percentValue)}`;
+                      return `${formatValueByLabel(Number(value), label)} | atingiu: ${toPercent(percentValue)}`;
                     }}
                     cursor={false}
                     contentStyle={{
@@ -837,11 +837,10 @@ export function DashboardOverview() {
                       const percentKey = `${String(seriesName)}__percent`;
                       const percentRaw = (item?.payload as Record<string, unknown> | undefined)?.[percentKey];
                       const percentValue = typeof percentRaw === "number" ? percentRaw : null;
-                      const denominatorLabel = getDenominatorLabel(String(seriesName));
-                      if (!denominatorLabel) {
+                      if (percentValue === null) {
                         return chartIsQuantity ? toQuantity(Number(value)) : toCurrency(Number(value));
                       }
-                      return `${chartIsQuantity ? toQuantity(Number(value)) : toCurrency(Number(value))} | %: ${toPercent(percentValue)}`;
+                      return `${chartIsQuantity ? toQuantity(Number(value)) : toCurrency(Number(value))} | atingiu: ${toPercent(percentValue)}`;
                     }}
                     labelFormatter={(value) => monthLabelByNumber[Number(value)] ?? String(value)}
                     contentStyle={{
@@ -887,11 +886,13 @@ export function DashboardOverview() {
           const sortedRows = sortSubtableRows(table.rows as SubtableRow[], table.ano, sortState);
           const tableRows = table.rows as SubtableRow[];
           const totalByIdentityAndTipo = new Map<string, number>();
+          const tiposByIdentity = new Map<string, Set<string>>();
           for (const row of tableRows) {
-            totalByIdentityAndTipo.set(
-              `${getSubtableRowIdentity(row)}||${row.tipo_faturamento}`,
-              row.total
-            );
+            const identity = getSubtableRowIdentity(row);
+            totalByIdentityAndTipo.set(`${identity}||${row.tipo_faturamento}`, row.total);
+            const currentTipos = tiposByIdentity.get(identity) ?? new Set<string>();
+            currentTipos.add(row.tipo_faturamento);
+            tiposByIdentity.set(identity, currentTipos);
           }
 
           const sortIndicator = (column: SubtableSortColumn) => {
@@ -1010,16 +1011,19 @@ export function DashboardOverview() {
                           Total{sortIndicator("total")}
                         </button>
                       </th>
-                      <th className="px-3 py-2 text-xs font-medium text-zinc-400">%</th>
+                      <th className="px-3 py-2 text-xs font-medium text-zinc-400">atingiu</th>
                     </tr>
                   </thead>
                   <tbody>
                     {sortedRows.map((row, index) => {
-                      const denominatorLabel = getDenominatorLabel(row.tipo_faturamento);
+                      const identity = getSubtableRowIdentity(row);
+                      const availableTipos = tiposByIdentity.get(identity) ?? new Set<string>();
+                      const denominatorLabel = getDenominatorLabelFromAvailable(
+                        row.tipo_faturamento,
+                        availableTipos
+                      );
                       const denominatorValue = denominatorLabel
-                        ? totalByIdentityAndTipo.get(
-                            `${getSubtableRowIdentity(row)}||${denominatorLabel}`
-                          ) ?? 0
+                        ? totalByIdentityAndTipo.get(`${identity}||${denominatorLabel}`) ?? 0
                         : 0;
                       const percentValue = denominatorLabel
                         ? safeDivide(row.total, denominatorValue)
@@ -1028,19 +1032,6 @@ export function DashboardOverview() {
                       return (
                         <tr
                           key={`${table.ano}-${row.promotor}-${row.tipo_faturamento}-${index}`}
-                          onMouseEnter={() =>
-                            setHoveredRowDetails({
-                              ano: table.ano,
-                              promotor: row.promotor,
-                              tipoFaturamento: row.tipo_faturamento,
-                              monthlyBreakdown: row.monthlyBreakdown,
-                            })
-                          }
-                          onMouseLeave={() => {
-                            if (!pinnedRowDetails) {
-                              setHoveredRowDetails(null);
-                            }
-                          }}
                           onClick={() => {
                             const nextDetails = {
                               ano: table.ano,
@@ -1084,29 +1075,25 @@ export function DashboardOverview() {
                   </tbody>
                 </table>
               </div>
-              {(pinnedRowDetails ?? hoveredRowDetails) &&
-              (pinnedRowDetails ?? hoveredRowDetails)?.ano === table.ano ? (
+              {pinnedRowDetails && pinnedRowDetails.ano === table.ano ? (
                 <div className="mt-3 rounded-xl border border-zinc-800 bg-zinc-950/70 p-3">
                   <p className="text-xs font-medium text-zinc-300">
-                    Detalhe mensal - {(pinnedRowDetails ?? hoveredRowDetails)?.promotor} /{" "}
-                    {(pinnedRowDetails ?? hoveredRowDetails)?.tipoFaturamento}
+                    Detalhe mensal - {pinnedRowDetails.promotor} / {pinnedRowDetails.tipoFaturamento}
                   </p>
                   <div className="mt-2 grid grid-cols-1 gap-1 text-xs text-zinc-400 sm:grid-cols-2 lg:grid-cols-3">
-                    {(pinnedRowDetails ?? hoveredRowDetails)?.monthlyBreakdown
+                    {pinnedRowDetails.monthlyBreakdown
                       .slice()
                       .sort((a, b) => a.mes - b.mes)
                       .map((item) => (
                         <div
-                          key={`${(pinnedRowDetails ?? hoveredRowDetails)?.ano}-${(pinnedRowDetails ?? hoveredRowDetails)?.promotor}-${item.mes}`}
+                          key={`${pinnedRowDetails.ano}-${pinnedRowDetails.promotor}-${item.mes}`}
                           className="rounded-md border border-zinc-800 bg-zinc-900/80 px-2 py-1"
                         >
                           <span className="text-zinc-500">
                             {monthLabelByNumber[item.mes] ?? item.mes}:
                           </span>{" "}
                           <span className="text-zinc-200">
-                            {isTreinamentosLabel(
-                              (pinnedRowDetails ?? hoveredRowDetails)?.tipoFaturamento ?? ""
-                            )
+                            {isTreinamentosLabel(pinnedRowDetails.tipoFaturamento)
                               ? toQuantity(item.total)
                               : toCurrency(item.total)}
                           </span>
