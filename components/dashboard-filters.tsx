@@ -86,6 +86,34 @@ type DashboardFiltersProps = {
   onChange: (filters: DashboardFilters) => void;
 };
 
+const billingTypeGroups = [
+  {
+    id: "SELL_IN",
+    label: "SELL IN",
+    values: ["REALIZADO SELL IN", "META SELL IN"],
+  },
+  {
+    id: "SELL_OUT_VB_CAMPO",
+    label: "SELL OUT VB CAMPO",
+    values: ["REALIZADO SELL OUT - VB CAMPO", "META SELL OUT - VB CAMPO"],
+  },
+  {
+    id: "TREINAMENTOS",
+    label: "TREINAMENTOS",
+    values: ["REALIZADO TREINAMENTOS", "META TREINAMENTOS"],
+  },
+  {
+    id: "SELL_OUT_LOJA",
+    label: "SELL OUT LOJA",
+    values: ["REALIZADO SELL OUT - LOJA", "ESTOQUE LOJA"],
+  },
+  {
+    id: "SELL_OUT_VB_CAMPO_X_LOJA",
+    label: "SELL OUT VB CAMPO X LOJA",
+    values: ["REALIZADO SELL OUT - VB CAMPO", "REALIZADO SELL OUT - LOJA"],
+  },
+] as const;
+
 export function DashboardFilters({ filters, onChange }: DashboardFiltersProps) {
   const [openFilterId, setOpenFilterId] = useState<string | null>(null);
   const queryKey = useMemo(() => ["filter-options", filters], [filters]);
@@ -128,6 +156,41 @@ export function DashboardFilters({ filters, onChange }: DashboardFiltersProps) {
   const toggleOpenFilter = useCallback((id: string) => {
     setOpenFilterId((current) => (current === id ? null : id));
   }, []);
+
+  const billingTypeOptions = useMemo(() => {
+    const availableBillingTypes = new Set(data?.tiposFaturamento ?? []);
+
+    return billingTypeGroups
+      .filter((group) => group.values.some((value) => availableBillingTypes.has(value)))
+      .map((group) => ({
+        value: group.id,
+        label: group.label,
+      }));
+  }, [data?.tiposFaturamento]);
+
+  const selectedBillingTypeGroups = useMemo(() => {
+    return billingTypeGroups
+      .filter((group) => group.values.every((value) => filters.tiposFaturamento.includes(value)))
+      .map((group) => group.id);
+  }, [filters.tiposFaturamento]);
+
+  const toggleBillingTypeGroup = useCallback((groupId: string) => {
+    const group = billingTypeGroups.find((item) => item.id === groupId);
+
+    if (!group) {
+      return;
+    }
+
+    const shouldRemove = group.values.every((value) => filters.tiposFaturamento.includes(value));
+    const groupValuesSet = new Set<string>(group.values);
+
+    onChange({
+      ...filters,
+      tiposFaturamento: shouldRemove
+        ? filters.tiposFaturamento.filter((value) => !groupValuesSet.has(value))
+        : Array.from(new Set([...filters.tiposFaturamento, ...group.values])),
+    });
+  }, [filters, onChange]);
 
   return (
     <section className="rounded-2xl border border-zinc-800 bg-zinc-900 p-5 shadow-sm">
@@ -182,10 +245,10 @@ export function DashboardFilters({ filters, onChange }: DashboardFiltersProps) {
             />
             <MultiSelect
               id="tipo-faturamento"
-              label="Tipo Faturamento"
-              options={(data?.tiposFaturamento ?? []).map((item) => ({ value: item, label: item }))}
-              selected={filters.tiposFaturamento}
-              onToggle={(value) => toggleStringFilter("tiposFaturamento", value)}
+              label="Tipo de Faturamento"
+              options={billingTypeOptions}
+              selected={selectedBillingTypeGroups}
+              onToggle={toggleBillingTypeGroup}
               isOpen={openFilterId === "tipo-faturamento"}
               onToggleOpen={toggleOpenFilter}
             />
