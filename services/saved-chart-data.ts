@@ -51,8 +51,8 @@ type ValueOperation =
   | "var"
   | "varp";
 
-function getSourceValue(row: SubtableSourceRow, field: SavedChartDto["xField"] | SavedChartDto["yField"]) {
-  return row[field as keyof SubtableSourceRow];
+function getSourceValue(row: SubtableSourceRow, field: keyof SubtableSourceRow) {
+  return row[field];
 }
 
 export async function getSavedChartData(
