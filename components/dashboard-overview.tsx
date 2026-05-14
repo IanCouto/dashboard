@@ -1,12 +1,13 @@
 "use client";
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useState, type CSSProperties } from "react";
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Bar as RechartsBar,
   BarChart as RechartsBarChart,
   CartesianGrid,
   Cell,
+  LabelList,
   Legend,
   Line,
   LineChart as RechartsLineChart,
@@ -91,6 +92,120 @@ function toPercent(value: number | null) {
   return percentage.format(value);
 }
 
+type BarColumnChartRow = {
+  label: string;
+  valor: number;
+  percent: number | null;
+};
+
+function isCartesianLabelViewBox(
+  viewBox: unknown
+): viewBox is { x: number; y: number; width: number; height: number } {
+  if (!viewBox || typeof viewBox !== "object") {
+    return false;
+  }
+  const { x, y, width, height } = viewBox as Record<string, unknown>;
+  return (
+    typeof x === "number" &&
+    typeof y === "number" &&
+    typeof width === "number" &&
+    typeof height === "number"
+  );
+}
+
+type BarColumnLabelListProps = {
+  viewBox?: unknown;
+  value?: number | string;
+  index?: number;
+};
+
+function barColumnCalloutBoxStyleForSize(fontSize: number): CSSProperties {
+  return {
+    boxSizing: "border-box",
+    width: "100%",
+    height: "100%",
+    backgroundColor: "#18181b",
+    color: "#e4e4e7",
+    border: "1px solid #3f3f46",
+    borderRadius: "8px",
+    padding: "4px 6px",
+    fontSize,
+    lineHeight: 1.25,
+    display: "flex",
+    flexDirection: "column",
+    justifyContent: "center",
+    gap: 1,
+    wordBreak: "break-word",
+    pointerEvents: "none",
+  };
+}
+
+function BarColumnStaticCallout(
+  props: BarColumnLabelListProps & { variant: "column" | "bar"; rows: BarColumnChartRow[] }
+) {
+  const { viewBox, value, variant, rows } = props;
+  const idx = typeof props.index === "number" ? props.index : -1;
+  const row = idx >= 0 && idx < rows.length ? rows[idx] : undefined;
+  if (!isCartesianLabelViewBox(viewBox) || row?.label === undefined) {
+    return null;
+  }
+  const { x: bx, y: by, width: bw, height: bh } = viewBox;
+  const num = Number(value);
+  if (!Number.isFinite(num)) {
+    return null;
+  }
+  const line1 = String(row.label);
+  const line2 = `valor : ${formatValueByLabel(num, row.label)} | atingiu: ${toPercent(row.percent ?? null)}`;
+
+  const pad = 6;
+  const maxPreferW = 280;
+
+  let fx: number;
+  let fy: number;
+  let boxW: number;
+  let boxH: number;
+  let fontSize = 12;
+
+  if (variant === "column") {
+    boxW = Math.min(maxPreferW, Math.max(bw - pad * 2, 32));
+    boxH = Math.min(56, Math.max(bh - pad * 2, 28));
+    if (boxH < 24 || boxW < 32) {
+      return null;
+    }
+    if (bw < 72) {
+      fontSize = 10;
+    }
+    fx = bx + (bw - boxW) / 2;
+    fy = by + pad;
+  } else {
+    boxW = Math.min(maxPreferW, Math.max(bw - pad * 2, 32));
+    boxH = Math.min(56, Math.max(bh - pad * 2, 22));
+    if (boxH < 20 || boxW < 32) {
+      return null;
+    }
+    if (bh < 36) {
+      fontSize = 10;
+    }
+    fx = bx + bw - boxW - pad;
+    fy = by + (bh - boxH) / 2;
+  }
+
+  const inner = (
+    <div style={barColumnCalloutBoxStyleForSize(fontSize)}>
+      <span style={{ fontWeight: 500 }}>{line1}</span>
+      <span>{line2}</span>
+    </div>
+  );
+
+  return (
+    <g>
+      <foreignObject x={fx} y={fy} width={boxW} height={boxH}>
+        {inner}
+      </foreignObject>
+    </g>
+  );
+}
+
 const billingDivisionPairs = [
   { numerator: "REALIZADO SELL IN", denominator: "META SELL IN" },
   { numerator: "REALIZADO SELL OUT - VB CAMPO", denominator: "META SELL OUT - VB CAMPO" },
@@ -133,6 +248,64 @@ function safeDivide(numerator: number, denominator: number): number | null {
     return null;
   }
   return numerator / denominator;
+}
+
+const ANNUAL_COMPARISON_CHART_NAME = "Comparação Anual";
+
+function isAnnualComparisonChartName(name: string) {
+  return (
+    name.trim().toLocaleLowerCase("pt-BR") ===
+    ANNUAL_COMPARISON_CHART_NAME.toLocaleLowerCase("pt-BR")
+  );
+}
+
+/** Label vinda do pivot: `linha(s) | coluna` — para comparação anual a coluna é o ano. */
+function parsePivotLabelRowAndYear(fullLabel: string): { rowPart: string; year: number } | null {
+  const idx = fullLabel.lastIndexOf(" | ");
+  if (idx === -1) {
+    return null;
+  }
+  const rowPart = fullLabel.slice(0, idx);
+  const colPart = fullLabel.slice(idx + 3).trim();
+  const year = Number(colPart);
+  if (!Number.isFinite(year) || !Number.isInteger(year) || year < 1900 || year > 3000) {
+    return null;
+  }
+  return { rowPart, year };
+}
+
+function buildAnnualComparisonLookup(
+  chartData: Array<{ label: string; value: number }>
+): Map<string, number> {
+  const lookup = new Map<string, number>();
+  for (const point of chartData) {
+    const parsed = parsePivotLabelRowAndYear(point.label);
+    if (parsed) {
+      lookup.set(`${parsed.rowPart}||${parsed.year}`, point.value);
+    }
+  }
+  return lookup;
+}
+
+function annualComparisonPercent(
+  fullLabel: string,
+  currentValue: number,
+  lookup: Map<string, number>,
+  selectedYears: number[]
+): number | null {
+  const parsed = parsePivotLabelRowAndYear(fullLabel);
+  if (!parsed) {
+    return null;
+  }
+  const prevYear = parsed.year - 1;
+  if (selectedYears.length > 0 && !selectedYears.includes(prevYear)) {
+    return null;
+  }
+  const prevValue = lookup.get(`${parsed.rowPart}||${prevYear}`);
+  if (prevValue === undefined) {
+    return null;
+  }
+  return safeDivide(currentValue, prevValue);
 }
 
 function formValuesToPayload(values: SavedChartFormValues) {
@@ -661,7 +834,28 @@ export function DashboardOverview() {
           const chartIsQuantity = chartData.length > 0 && chartData.every((item) => isTreinamentosLabel(item.label));
           const chartValueByLabel = new Map(chartData.map((item) => [item.label, item.value]));
           const availableChartLabels = new Set(chartData.map((item) => item.label));
+          const useAnnualYoYPercent =
+            isAnnualComparisonChartName(chart.name) &&
+            (chart.chartType === "bar" || chart.chartType === "column");
+          const annualComparisonLookup = useAnnualYoYPercent
+            ? buildAnnualComparisonLookup(chartData)
+            : null;
           const barColumnData = chartData.map((item) => {
+            if (useAnnualYoYPercent && annualComparisonLookup) {
+              const parsedYearColumn = parsePivotLabelRowAndYear(item.label);
+              if (parsedYearColumn) {
+                return {
+                  label: stripTotalPrefix(item.label),
+                  valor: item.value,
+                  percent: annualComparisonPercent(
+                    item.label,
+                    item.value,
+                    annualComparisonLookup,
+                    filters.anos
+                  ),
+                };
+              }
+            }
             const denominatorLabel = getDenominatorLabelFromAvailable(item.label, availableChartLabels);
             const denominatorValue = denominatorLabel ? chartValueByLabel.get(denominatorLabel) ?? 0 : 0;
             return {
@@ -736,22 +930,19 @@ export function DashboardOverview() {
                     axisLine={{ stroke: "#3f3f46" }}
                     tickLine={{ stroke: "#3f3f46" }}
                   />
-                  <Tooltip
-                    formatter={(value: number, _name, item) => {
-                      const percentValue = (item?.payload as { percent?: number | null })?.percent ?? null;
-                      const label = String((item?.payload as { label?: string })?.label ?? "");
-                      return `${formatValueByLabel(Number(value), label)} | atingiu: ${toPercent(percentValue)}`;
-                    }}
-                    cursor={false}
-                    contentStyle={{
-                      backgroundColor: "#18181b",
-                      border: "1px solid #3f3f46",
-                      borderRadius: "8px",
-                    }}
-                    labelStyle={{ color: "#e4e4e7" }}
-                    itemStyle={{ color: "#e4e4e7" }}
-                  />
-                  <RechartsBar dataKey="valor" radius={[0, 6, 6, 0]} activeBar={false}>
+                  <RechartsBar
+                    dataKey="valor"
+                    radius={[0, 6, 6, 0]}
+                    activeBar={false}
+                    isAnimationActive={false}
+                    style={{ cursor: "default" }}
+                  >
+                    <LabelList
+                      dataKey="valor"
+                      content={(labelProps) => (
+                        <BarColumnStaticCallout {...labelProps} variant="bar" rows={barColumnData} />
+                      )}
+                    />
                     {chartData.map((entry, index) => (
                       <Cell
                         key={`${entry.label}-${index}`}
@@ -785,22 +976,19 @@ export function DashboardOverview() {
                     axisLine={{ stroke: "#3f3f46" }}
                     tickLine={{ stroke: "#3f3f46" }}
                   />
-                  <Tooltip
-                    formatter={(value: number, _name, item) => {
-                      const percentValue = (item?.payload as { percent?: number | null })?.percent ?? null;
-                      const label = String((item?.payload as { label?: string })?.label ?? "");
-                      return `${formatValueByLabel(Number(value), label)} | atingiu: ${toPercent(percentValue)}`;
-                    }}
-                    cursor={false}
-                    contentStyle={{
-                      backgroundColor: "#18181b",
-                      border: "1px solid #3f3f46",
-                      borderRadius: "8px",
-                    }}
-                    labelStyle={{ color: "#e4e4e7" }}
-                    itemStyle={{ color: "#e4e4e7" }}
-                  />
-                  <RechartsBar dataKey="valor" radius={[6, 6, 0, 0]} activeBar={false}>
+                  <RechartsBar
+                    dataKey="valor"
+                    radius={[6, 6, 0, 0]}
+                    activeBar={false}
+                    isAnimationActive={false}
+                    style={{ cursor: "default" }}
+                  >
+                    <LabelList
+                      dataKey="valor"
+                      content={(labelProps) => (
+                        <BarColumnStaticCallout {...labelProps} variant="column" rows={barColumnData} />
+                      )}
+                    />
                     {chartData.map((entry, index) => (
                       <Cell
                         key={`${entry.label}-${index}`}
