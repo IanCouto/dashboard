@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo, useState, type CSSProperties } from "react";
+import { useCallback, useMemo, useRef, useState, type CSSProperties } from "react";
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Bar as RechartsBar,
@@ -16,6 +16,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
+import { toPng } from "html-to-image";
 import { utils, writeFileXLSX } from "xlsx";
 import { ChevronDown, Download } from "lucide-react";
 import { createSavedChartAction } from "@/app/actions/create-saved-chart";
@@ -31,7 +32,7 @@ import {
   type SavedChartFormValues,
 } from "@/components/saved-chart-form";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardAction, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { SavedChartType } from "@/services/chart-fields";
 import type { DashboardFilters as DashboardFiltersType } from "@/services/filter-options";
@@ -90,6 +91,28 @@ function toPercent(value: number | null) {
     return "-";
   }
   return percentage.format(value);
+}
+
+function sanitizeChartFilename(name: string): string {
+  const trimmed = name.trim().slice(0, 120);
+  const safe = trimmed.replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_").replace(/\s+/g, " ").trim();
+  return safe.length > 0 ? safe : "grafico";
+}
+
+async function downloadChartAsHighResPng(node: HTMLElement, chartName: string): Promise<void> {
+  const dpr = typeof window !== "undefined" ? window.devicePixelRatio || 1 : 1;
+  // PNG is lossless: quality follows output resolution. At least 4× CSS pixels; up to 5× on HiDPI.
+  const pixelRatio = Math.min(5, Math.max(4, Math.round(dpr * 2)));
+
+  const dataUrl = await toPng(node, {
+    pixelRatio,
+    cacheBust: true,
+    backgroundColor: "#18181b",
+  });
+  const link = document.createElement("a");
+  link.href = dataUrl;
+  link.download = `${sanitizeChartFilename(chartName)}.png`;
+  link.click();
 }
 
 type BarColumnChartRow = {
@@ -435,6 +458,8 @@ export function DashboardOverview() {
   const [selectedChartIds, setSelectedChartIds] = useState<string[]>([]);
   const [chartSearch, setChartSearch] = useState("");
   const [isSavedChartsOpen, setIsSavedChartsOpen] = useState(true);
+  const chartExportSurfaceRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+  const [exportingChartId, setExportingChartId] = useState<string | null>(null);
 
   const chartsById = useMemo(
     () => new Map((savedChartsQuery.data ?? []).map((chart) => [chart.id, chart])),
@@ -637,6 +662,22 @@ export function DashboardOverview() {
     },
     [selectedYearTables, subtableSortByYear]
   );
+
+  const handleDownloadChartPng = useCallback(async (chartId: string, chartName: string) => {
+    const node = chartExportSurfaceRefs.current.get(chartId);
+    if (!node) {
+      return;
+    }
+    try {
+      setExportingChartId(chartId);
+      await downloadChartAsHighResPng(node, chartName);
+    } catch (error) {
+      console.error(error);
+      window.alert("Nao foi possivel exportar o grafico. Tente novamente.");
+    } finally {
+      setExportingChartId(null);
+    }
+  }, []);
 
   const toggleSubtableSort = useCallback((ano: number, column: SubtableSortColumn) => {
     setSubtableSortByYear((previous) => {
@@ -891,11 +932,39 @@ export function DashboardOverview() {
           });
 
           return (
-      <Card key={chart.id} className="rounded-2xl border-zinc-800 bg-zinc-900 text-white shadow-sm">
+      <Card
+        key={chart.id}
+        ref={(el) => {
+          if (el) {
+            chartExportSurfaceRefs.current.set(chart.id, el);
+          } else {
+            chartExportSurfaceRefs.current.delete(chart.id);
+          }
+        }}
+        className="rounded-2xl border-zinc-800 bg-zinc-900 text-white shadow-sm"
+      >
         <CardHeader className="pb-1">
-          <CardTitle className="text-sm font-medium text-zinc-400">
+          <CardTitle className="text-sm font-medium text-zinc-400 min-w-0">
             {`Visualizacao: ${chart.name}`}
           </CardTitle>
+          <CardAction>
+            <Button
+              type="button"
+              variant="outline"
+              title="Download em alta definicao (PNG)"
+              disabled={
+                Boolean(chartQuery?.isLoading) ||
+                chartData.length === 0 ||
+                exportingChartId === chart.id
+              }
+              className="h-8 shrink-0 gap-1 rounded-lg border-zinc-700 px-2 text-xs text-zinc-200"
+              onClick={() => {
+                void handleDownloadChartPng(chart.id, chart.name);
+              }}
+            >
+              <Download className="size-4 shrink-0" />
+            </Button>
+          </CardAction>
         </CardHeader>
         <CardContent>
           {chartQuery?.isLoading ? (
