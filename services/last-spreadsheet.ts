@@ -7,10 +7,12 @@ type SpreadsheetMeta = {
 };
 
 export async function saveLastSpreadsheet(fileName: string, content: Uint8Array) {
+  const bytes = Buffer.from(content);
+
   await prisma.uploadedSpreadsheet.upsert({
     where: { id: SINGLETON_ID },
-    create: { id: SINGLETON_ID, fileName, content },
-    update: { fileName, content },
+    create: { id: SINGLETON_ID, fileName, content: bytes },
+    update: { fileName, content: bytes },
   });
 }
 
