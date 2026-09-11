@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { findHeaderRowIndex } from "../lib/excel.ts";
+import { findHeaderRowIndex } from "../lib/excel";
 
 const workingStyle = [
   ["", "", "R$ 1,066,829", "R$ 1,034,980"],
