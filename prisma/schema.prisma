@@ -70,3 +70,12 @@ model SavedChart {
   @@index([updatedAt(sort: Desc)])
   @@map("saved_charts")
 }
+
+model UploadedSpreadsheet {
+  id         Int      @id @default(1)
+  fileName   String
+  content    Bytes
+  uploadedAt DateTime @default(now()) @updatedAt
+
+  @@map("uploaded_spreadsheets")
+}

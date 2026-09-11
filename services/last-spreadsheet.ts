@@ -1,42 +1,38 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import path from "node:path";
+import { prisma } from "@/lib/prisma";
 
-const dataDir = path.join(process.cwd(), "data");
-const contentPath = path.join(dataDir, "last-spreadsheet.bin");
-const metaPath = path.join(dataDir, "last-spreadsheet.json");
+const SINGLETON_ID = 1;
 
 type SpreadsheetMeta = {
   fileName: string;
 };
 
-// ponytail: last upload lives on local disk (cwd/data). Ceiling: single-instance / lost on ephemeral hosts; move to object storage if that becomes a problem.
 export async function saveLastSpreadsheet(fileName: string, content: Uint8Array) {
-  await mkdir(dataDir, { recursive: true });
-  await writeFile(contentPath, content);
-  await writeFile(metaPath, JSON.stringify({ fileName } satisfies SpreadsheetMeta));
+  await prisma.uploadedSpreadsheet.upsert({
+    where: { id: SINGLETON_ID },
+    create: { id: SINGLETON_ID, fileName, content },
+    update: { fileName, content },
+  });
 }
 
 export async function getLastSpreadsheetMeta(): Promise<SpreadsheetMeta | null> {
-  try {
-    const meta = JSON.parse(await readFile(metaPath, "utf8")) as SpreadsheetMeta;
-    return meta.fileName ? meta : null;
-  } catch {
-    return null;
-  }
+  const row = await prisma.uploadedSpreadsheet.findUnique({
+    where: { id: SINGLETON_ID },
+    select: { fileName: true },
+  });
+  return row ? { fileName: row.fileName } : null;
 }
 
 export async function getLastSpreadsheet() {
-  const meta = await getLastSpreadsheetMeta();
-  if (!meta) {
+  const row = await prisma.uploadedSpreadsheet.findUnique({
+    where: { id: SINGLETON_ID },
+  });
+
+  if (!row) {
     return null;
   }
 
-  try {
-    return {
-      fileName: meta.fileName,
-      content: await readFile(contentPath),
-    };
-  } catch {
-    return null;
-  }
+  return {
+    fileName: row.fileName,
+    content: row.content,
+  };
 }
