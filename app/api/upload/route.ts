@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { parseExcelFile } from "@/lib/excel";
+import { saveLastSpreadsheet } from "@/services/last-spreadsheet";
 import { replaceRecordsFromRows } from "@/services/records-ingestion";
 
 export async function POST(request: Request) {
@@ -24,8 +25,10 @@ export async function POST(request: Request) {
   }
 
   try {
+    const content = new Uint8Array(await file.arrayBuffer());
     const parsed = await parseExcelFile(file);
     const ingestion = await replaceRecordsFromRows(parsed.rows, parsed.headers);
+    await saveLastSpreadsheet(file.name, content);
 
     return NextResponse.json({
       status: "success",
@@ -34,6 +37,7 @@ export async function POST(request: Request) {
   } catch (error) {
     const message =
       error instanceof Error ? error.message : "Nao foi possivel processar o arquivo Excel.";
+    console.error("[upload]", message);
 
     return NextResponse.json({ status: "error", message }, { status: 500 });
   }
